@@ -108,4 +108,63 @@ expect_error(hoij_lavaan(fit_uls), "ML")
 fit_eq  <- sem("f =~ x1 + a*x2 + a*x3", data = HolzingerSwineford1939)
 expect_error(hoij_lavaan(fit_eq), "restricties")
 
+## ── (4) compatibiliteit met development-lavaan (renames) ─────
+## De dev-versie hernoemde lav_model_x2GLIST -> lav_model_x2glist,
+## lav_model_gradient -> lav_model_grad en het argument GLIST -> glist.
+## We simuleren de argument-rename hier door de 0.6.x-internals te
+## vervangen door shims met exact de dev-signatuur; de resultaten
+## moeten bit-identiek zijn aan de ongewijzigde run.
+cat("\n── (4) Dev-lavaan-compatibiliteit (gesimuleerde renames) ──\n")
+ns <- asNamespace("lavaan")
+if (all(c("lav_model_implied", "lav_model_gradient") %in% ls(ns))) {
+  orig_implied  <- get("lav_model_implied",  envir = ns)
+  orig_gradient <- get("lav_model_gradient", envir = ns)
+
+  ## NB: de shims moeten OOK lavaan's eigen interne aanroepen (met de
+  ## oude GLIST=-naam, o.a. vanuit lav_model_hessian) blijven bedienen;
+  ## die vangen we op via `...`. Ons pad detecteert `glist` in de
+  ## formals en gebruikt de dev-naam — precies wat getest moet worden.
+  dev_implied <- function(lavmodel = NULL, glist = NULL, delta = TRUE, ...) {
+    dots <- list(...)
+    if (is.null(glist) && !is.null(dots$GLIST)) glist <- dots$GLIST
+    orig_implied(lavmodel = lavmodel, GLIST = glist, delta = delta)
+  }
+  dev_gradient <- function(lavmodel = NULL, glist = NULL,
+                           lavsamplestats = NULL, lavdata = NULL,
+                           lavcache = NULL, ...) {
+    dots <- list(...)
+    if (is.null(glist) && !is.null(dots$GLIST)) glist <- dots$GLIST
+    orig_gradient(lavmodel = lavmodel, GLIST = glist,
+                  lavsamplestats = lavsamplestats, lavdata = lavdata,
+                  lavcache = lavcache)
+  }
+  assignInNamespace("lav_model_implied",  dev_implied,  ns = "lavaan")
+  assignInNamespace("lav_model_gradient", dev_gradient, ns = "lavaan")
+  source("hoij_lavaan.R")   # reset resolver-cache
+  h2_dev <- hoij_lavaan(fit, functional = functionals,
+                        B = 1000L, order = 2L, seed = 1)
+  stopifnot(isTRUE(all.equal(h2_dev$results, h2$results)))
+  cat("  OK: identieke resultaten met dev-stijl glist-signaturen\n")
+
+  ## sanity-check moet stille glist-breuk detecteren: een implied()
+  ## die het glist-argument NEGEERT (het pre-fix faalscenario) moet
+  ## door hoij_lavaan() worden onderschept.
+  broken_implied <- function(lavmodel = NULL, glist = NULL,
+                             delta = TRUE, ...) {
+    orig_implied(lavmodel = lavmodel, GLIST = NULL, delta = delta)
+  }
+  assignInNamespace("lav_model_implied", broken_implied, ns = "lavaan")
+  source("hoij_lavaan.R")
+  expect_error(hoij_lavaan(fit, functional = functionals, B = 100L, seed = 1),
+               "koppeling defect")
+
+  ## herstel
+  assignInNamespace("lav_model_implied",  orig_implied,  ns = "lavaan")
+  assignInNamespace("lav_model_gradient", orig_gradient, ns = "lavaan")
+  source("hoij_lavaan.R")
+} else {
+  cat("  (overgeslagen: deze lavaan-versie heeft de dev-namen al;\n",
+      "   secties 1-3 dekken dan het dev-pad zelf)\n")
+}
+
 cat("\nAlle tests geslaagd.\n")

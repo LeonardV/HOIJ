@@ -25,8 +25,12 @@
 #
 # Afhankelijkheden: lavaan (lavScores, lavTech, lavInspect), MASS (ginv-
 # fallback). De rekenkern gebruikt drie niet-geexporteerde lavaan-
-# functies (lav_model_x2glist, lav_model_implied, lav_model_gradient);
-# zie ONDERZOEK_HOIJ_lavaan.md §2 voor het migratiepad naar de
+# functies; zowel de release- als de development-namen worden
+# ondersteund (functie- en argumentnamen worden bij runtime opgelost):
+#   lav_model_x2GLIST  / lav_model_x2glist
+#   lav_model_gradient / lav_model_grad
+#   lav_model_implied  met GLIST= / glist=
+# Zie ONDERZOEK_HOIJ_lavaan.md §2 voor het migratiepad naar de
 # geexporteerde API.
 # ============================================================
 
@@ -35,30 +39,60 @@
 # Interne rekenkern (identiek aan `kernfuncties`, hernoemd .hoij_*)
 # ─────────────────────────────────────────────────────────────
 
-## Versie-robuuste resolver voor niet-geexporteerde lavaan-internals:
-## lavaan hernoemde rond 0.6-18 o.a. lav_model_x2GLIST -> lav_model_x2glist.
-.hoij_lav_internal <- function(...) {
-  for (nm in c(...)) {
-    f <- tryCatch(get(nm, envir = asNamespace("lavaan")),
-                  error = function(e) NULL)
-    if (is.function(f)) return(f)
+## Versie-robuuste resolver voor niet-geexporteerde lavaan-internals.
+## De development-versie van lavaan hernoemde zowel FUNCTIES als
+## ARGUMENTEN (release 0.6.17 -> development):
+##   lav_model_x2GLIST                -> lav_model_x2glist
+##   lav_model_gradient               -> lav_model_grad
+##   lav_model_implied(GLIST = ...)   -> lav_model_implied(glist = ...)
+## De argument-rename is verraderlijk: lav_model_implied() accepteert
+## `...`, dus een aanroep met GLIST= zou daar GERUISLOOS in verdwijnen
+## en op de gefitte parameters rekenen (J wordt dan stilzwijgend 0).
+## Daarom wordt per functie ook de juiste argumentnaam gedetecteerd, en
+## verifieert hoij_lavaan() bij de start dat een theta-perturbatie de
+## casewise loglik daadwerkelijk verandert.
+.hoij_internals <- local({
+  cache <- NULL
+  function() {
+    if (!is.null(cache)) return(cache)
+    find_fun <- function(nms) {
+      for (nm in nms) {
+        f <- tryCatch(get(nm, envir = asNamespace("lavaan")),
+                      error = function(e) NULL)
+        if (is.function(f)) return(f)
+      }
+      stop("lavaan-internal niet gevonden (geprobeerd: ",
+           paste(nms, collapse = ", "), "); deze lavaan-versie (",
+           as.character(utils::packageVersion("lavaan")),
+           ") wordt niet ondersteund.", call. = FALSE)
+    }
+    glist_arg <- function(f) {
+      fa <- names(formals(f))
+      if ("glist" %in% fa) "glist"
+      else if ("GLIST" %in% fa) "GLIST"
+      else stop("lavaan-internal heeft geen glist/GLIST-argument meer; ",
+                "hoij_lavaan.R moet worden bijgewerkt.", call. = FALSE)
+    }
+    x2glist  <- find_fun(c("lav_model_x2glist", "lav_model_x2GLIST"))
+    implied  <- find_fun("lav_model_implied")
+    gradient <- find_fun(c("lav_model_gradient", "lav_model_grad"))
+    cache <<- list(
+      x2glist       = x2glist,
+      implied       = implied,
+      gradient      = gradient,
+      implied_glist = glist_arg(implied),
+      grad_glist    = glist_arg(gradient))
+    cache
   }
-  stop("lavaan-internal niet gevonden (geprobeerd: ",
-       paste(c(...), collapse = ", "), "); deze lavaan-versie (",
-       as.character(utils::packageVersion("lavaan")),
-       ") wordt niet ondersteund.", call. = FALSE)
-}
-
-.hoij_x2glist  <- function() .hoij_lav_internal("lav_model_x2glist",
-                                                "lav_model_x2GLIST")
-.hoij_implied  <- function() .hoij_lav_internal("lav_model_implied")
-.hoij_gradient <- function() .hoij_lav_internal("lav_model_gradient")
+})
 
 .hoij_loglik_casewise <- function(fit, theta) {
   X <- fit@Data@X[[1]]
   N <- nrow(X); p <- ncol(X)
-  GLIST <- .hoij_x2glist()(fit@Model, x = theta)
-  implied <- .hoij_implied()(fit@Model, GLIST = GLIST)
+  ints <- .hoij_internals()
+  GLIST <- ints$x2glist(fit@Model, x = theta)
+  impl_args <- list(fit@Model); impl_args[[ints$implied_glist]] <- GLIST
+  implied <- do.call(ints$implied, impl_args)
   Sigma <- implied$cov[[1]]
   mu <- implied$mean[[1]]
   if (is.null(mu) || length(mu) == 0) mu <- colMeans(X)
@@ -103,14 +137,15 @@
   lavsamplestats <- fit@SampleStats
   lavdata        <- fit@Data
   lavcache       <- fit@Cache
+  ints <- .hoij_internals()
   function(theta) {
-    GLIST <- .hoij_x2glist()(lavmodel, x = theta)
-    as.numeric(.hoij_gradient()(
-      lavmodel       = lavmodel,
-      GLIST          = GLIST,
-      lavsamplestats = lavsamplestats,
-      lavdata        = lavdata,
-      lavcache       = lavcache))
+    GLIST <- ints$x2glist(lavmodel, x = theta)
+    grad_args <- list(lavmodel       = lavmodel,
+                      lavsamplestats = lavsamplestats,
+                      lavdata        = lavdata,
+                      lavcache       = lavcache)
+    grad_args[[ints$grad_glist]] <- GLIST
+    as.numeric(do.call(ints$gradient, grad_args))
   }
 }
 
@@ -285,6 +320,18 @@ hoij_lavaan <- function(fit,
   D        <- length(theta0)
   N        <- nrow(fit@Data@X[[1]])
   fns      <- .hoij_make_functionals(functional, th_names)
+
+  ## Sanity-check op de internals-koppeling: een perturbatie van theta
+  ## MOET de casewise loglik veranderen. Vangt stille breuken af zoals
+  ## een genegeerd glist/GLIST-argument na een lavaan-rename (de loglik
+  ## zou dan constant zijn en J stilzwijgend 0 worden).
+  th_pert <- theta0; th_pert[1] <- th_pert[1] + 1e-3
+  if (identical(.hoij_loglik_casewise(fit, theta0),
+                .hoij_loglik_casewise(fit, th_pert)))
+    stop("Interne lavaan-koppeling defect: een theta-perturbatie ",
+         "verandert de casewise loglikelihood niet. Waarschijnlijk is ",
+         "een lavaan-internal hernoemd; werk hoij_lavaan.R bij.",
+         call. = FALSE)
 
   ## indices variantieparameters (toelaatbaarheid replicaten)
   spl <- strsplit(th_names, "~~", fixed = TRUE)
