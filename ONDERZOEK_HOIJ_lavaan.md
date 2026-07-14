@@ -1,160 +1,190 @@
 # Onderzoek: HOIJ implementeren in lavaan
 
-Dit document beschrijft wat er nodig is om de HOIJ-procedure als volwaardige
-implementatie boven op `lavaan` te bouwen. Het vertrekt vanuit de bestaande
-prototype-functies in `kernfuncties` en brengt in kaart wat af is, wat ontbreekt,
-en welke keuzes/risico's er liggen.
+**HOIJ = Higher-Order Infinitesimal Jackknife** (tweede-orde IJ, "HOIJ-2").
+Doel van de implementatie: **standaardfouten en betrouwbaarheidsintervallen**
+voor (functies van) modelparameters van een gefit lavaan-model, zonder
+bootstrap-herfits — de bootstrapverdeling wordt benaderd via een tweede-orde
+Taylor-expansie van de schatter in de observatiegewichten.
 
-> Terminologie: het bestand `kernfuncties` levert de *rekenkern* (casewise
-> log-likelihood, casewise informatiebijdragen `J`, de derde-orde tensor `T`,
-> en een kalibratiestap). Dit zijn precies de bouwstenen van een **hogere-orde
-> correctie**: de gebruikelijke informatie­matrices (verwacht `I` / geobserveerd
-> `J`) aangevuld met de derde-afgeleide tensor `T`. De uiteindelijke HOIJ-grootheid
-> (de gecorrigeerde variantie / toetsgrootheid / betrouwbaarheidsinterval) zelf
-> staat nog niet in het bestand — dat is het grootste inhoudelijke gat (zie §2).
+Bronnen in deze repo:
+- `kernfuncties` — de rekenkern (casewise loglik, casewise informatie `J`,
+  derde-orde tensor `T`, α-kalibratie).
+- `HOIJ_simulatiestudie` — volledige toepassing: de HOIJ-2-replicatielus
+  (§8, r. 1108–1180), gedeelde multinomiale gewichten, percentiel-CI's, en
+  een pre-flight zelftest die alle schaalconventies verifieert (§6, r. 702–778).
 
 ---
 
-## 1. Wat de huidige rekenkern doet (analyse van `kernfuncties`)
+## 1. Hoe HOIJ werkt (zoals toegepast in `HOIJ_simulatiestudie`)
 
-| Functie | Wat het berekent | Schaal / conventie |
+Eenmalige setup per gefit model (θ̂ = `coef(fit)`, D parameters, N cases):
+
+1. **Scores** `S` (N×D): `lavScores(fit, scaling = TRUE)` — per case de
+   gradiëntbijdrage (conventie: −sᵢ/N, geverifieerd in zelftest (a)).
+2. **Inverse geobserveerde informatie** `H⁻¹`:
+   `lavTech(fit, "inverted.information.observed")`.
+3. **Casewise geobserveerde informatie** `J` (N×D×D): `compute_all_J()` —
+   numerieke tweede afgeleiden van de casewise loglik (zelftest (b):
+   `information.observed = Σᵢ Jᵢ / N`).
+4. **Derde-orde tensor** `T` (D×D×D): `compute_T_tensor_grad()` op lavaan's
+   analytische gradiënt van F, teruggeschaald naar loglik-schaal via
+   `calibrate_alpha()` (zelftest (c)/(d)).
+5. **Gewichten**: B multinomiale countvectoren `W` (B×N),
+   `Δw = W − 1` — *dezelfde* gewichten als een exacte bootstrap zou
+   gebruiken, zodat HOIJ−bootstrap-verschillen pure approximatiefout zijn.
+
+Per gewichtsvector (rij i van Δw):
+
+```
+c   = H⁻¹ Sᵀ Δwᵢ                 (invloedsterm)
+IJ1:    θ(w) ≈ θ̂ − c                                  (1e orde)
+HOIJ-2: d₂ = H⁻¹ J(Δwᵢ) c  −  ½ H⁻¹ T (c ⊗ c)
+        θ(w) ≈ θ̂ − c + s·d₂,   s = min(1, κ·‖c‖/‖d₂‖)  (trust-region-demping, κ = 0.5)
+```
+
+Daarna wordt de functionaal φ (bv. `ab`, `speed~~speed`, R², omega) op alle
+B pseudo-replicaten geëvalueerd: **SE = sd van de replicaatwaarden,
+CI = percentielinterval**. HOIJ-replicaten kunnen per constructie niet
+"niet convergeren" — het grote praktische voordeel boven bootstrap
+(1 fit + goedkope algebra i.p.v. B herfits).
+
+Diagnostiek die de studie meeneemt en die een implementatie moet behouden:
+α-`spread` (kalibratieconsistentie, tolerantie 0.1), dempingsfractie/mean s,
+fractie niet-toelaatbare replicaten (negatieve varianties), en een
+sensitiviteitsvariant die niet-toelaatbare replicaten schrapt.
+
+---
+
+## 2. Wat lavaan al levert vs. wat zelf gebouwd moet worden
+
+**Al beschikbaar via geëxporteerde API** (geen risico):
+- `lavScores(fit, scaling = TRUE)` — casewise scores.
+- `lavTech(fit, "information.observed")` / `"inverted.information.observed"`.
+- `lavTech(fit, "inverted.information.expected")` — voor de Wald-vergelijking.
+- `parTable()`-route voor eventuele verificatie-bootstraps.
+
+**Zelf te bouwen (nu prototype, met verbeterpunten):**
+
+| Onderdeel | Nu | Gewenst |
 |---|---|---|
-| `compute_loglik_casewise(fit, theta)` | Per observatie de multivariaat-normale log-likelihood ℓᵢ(θ). Zet `theta` (lavaan's vrije-parametervector `x`) om via `lav_model_x2glist` → model-implied Σ(θ), μ(θ), en evalueert de MVN-dichtheid per rij. Geeft vector van lengte N. | log-likelihood |
-| `compute_all_J(fit, theta0, delta)` | N×D×D array met `J[i,,] = −∂²ℓᵢ/∂θ∂θᵀ`: de casewise **geobserveerde informatie**. Som over i = totale geobserveerde informatiematrix. Centrale tweede finite differences. | log-likelihood |
-| `make_grad_F(fit)` | Closure `grad_F(theta) = ∂F/∂θ`, met lavaan's **analytische** gradiënt van de discrepantie-/fitfunctie F. | discrepantie F |
-| `calibrate_alpha(grad_F, theta0, H_observed, h)` | Differentieert `grad_F` numeriek → H_grad = ∂²F/∂θ∂θᵀ, en zoekt de scalar α met `H_observed ≈ α·H_grad`. `spread` = hoe constant de ratio is (consistentie-check). | brug tussen beide schalen |
-| `compute_T_tensor_grad(grad_F, theta, alpha, h)` | D×D×D tensor `T = α·∂³F/∂θ∂θ∂θ`, via tweemaal numeriek differentiëren van `grad_F`, daarna volledig gesymmetriseerd over alle 6 permutaties. | log-likelihood (via α) |
-
-**Kernobservatie over de schalen.** `J` staat op de log-likelihood-schaal,
-`grad_F` op de discrepantie-schaal F (voor ML geldt ruwweg F ≈ −(1/N)·Σℓᵢ + const).
-`calibrate_alpha` overbrugt die twee schalen empirisch (verwacht α ≈ N), en `T`
-wordt met diezelfde α teruggeschaald naar de log-likelihood-schaal. Deze
-schaalbrug is nu *empirisch gekalibreerd*; voor een productie-implementatie zou
-alles op één consistente (log-likelihood) schaal analytisch berekend moeten
-worden, zodat α niet meer nodig is behalve als diagnostiek.
+| Casewise `Jᵢ` (N×D×D) | numerieke 2e FD op casewise loglik, O(D²) loglik-evaluaties | analytisch via kettingregel: Jᵢ = Δᵀ Hᵢ(μ,Σ) Δ + 2e-afgeleide-term van de implied moments; lavaan's Δ-Jacobiaan (`lav_model_delta`) levert de eerste helft |
+| `T`-tensor (D×D×D) | numerieke 2e FD op analytische ∂F/∂θ + α-schaalbrug | idem numeriek is acceptabel, maar dan met Richardson-extrapolatie/`numDeriv`; α wordt overbodig zodra alles op één (loglik-)schaal staat |
+| α-kalibratie | empirische mediaan-ratio + spread-check | degraderen tot pure *diagnostiek* (zelftest), niet tot rekenstap |
+| `lavaan:::`-internals (`lav_model_x2glist`, `lav_model_implied`, `lav_model_gradient`) | direct aangeroepen | vervangen door `lav_export_estimation(fit)` waar mogelijk; anders versie-pin + CI-tests |
 
 ---
 
-## 2. Grootste inhoudelijke gat: de eigenlijke HOIJ-grootheid ontbreekt
+## 3. Voorstel publieke API
 
-De rekenkern levert `J` (geobserveerde informatie per case) en `T` (derde-orde
-tensor), maar **nergens worden die samengevoegd tot het eindresultaat**. Nodig:
+Eén gebruikersfunctie (werknaam) die de hele §8-kern van de simulatiestudie
+generiek maakt:
 
-- Een expliciete definitie + implementatie van de doelgrootheid: de hogere-orde
-  gecorrigeerde (co)variantie van θ̂, of de gecorrigeerde toetsgrootheid /
-  het gecorrigeerde betrouwbaarheidsinterval (bv. Edgeworth-/Cornish-Fisher- of
-  Bartlett-achtige correctie die `T` gebruikt om scheefheid/bias te corrigeren).
-- De **verwachte informatie `I`** ontbreekt (er is alleen geobserveerde `J`).
-  Als HOIJ `I` tegen `J` afzet, is die apart nodig — via
-  `lavInspect(fit, "information.expected")` of `lavaan:::lav_model_information`.
-- Eventueel de **casewise scores** (outer product = "meat" van een sandwich):
-  officieel beschikbaar via `lavaan::lavScores(fit)` / `estfun`, in plaats van
-  numeriek afgeleid.
+```r
+hoijLavaan(fit,
+           functional = NULL,   # NULL = alle vrije parameters;
+                                # of character ("a*b", ":=" -achtige expressie)
+                                # of functie phi(theta) / lijst daarvan
+           B = 1000L,           # aantal gewichtsvectoren
+           order = 2L,          # 1 = IJ1, 2 = HOIJ-2
+           kappa = 0.5,         # trust-region-demping
+           ci = c("perc", "none"),
+           level = 0.95,
+           admissibility = c("keep", "drop"),  # cf. hoij2 vs hoij2_sens
+           seed = NULL)
+```
 
-Dit is de eerste prioriteit: zonder de assemblagestap is er nog geen HOIJ-output.
+Retourneert een object met: schatting, **SE**, CI-grenzen, en diagnostiek
+(α-spread, dempingsfractie, fractie niet-toelaatbaar, timing) + nette
+`print()`/`summary()`. Aansluiting bij lavaan-conventies: zelfde interface-stijl
+als `bootstrapLavaan()`; functionalen bij voorkeur via lavaan's `:=`-syntaxis
+zodat gebruikers geen R-functies hoeven te schrijven (intern vertalen naar
+φ(θ) op de vrije-parametervector, zoals `functionals_scalar/vec` in de studie).
 
----
-
-## 3. Afhankelijkheid van niet-geëxporteerde lavaan-internals (risico)
-
-De kern leunt op `lavaan:::`-functies: `lav_model_x2glist`, `lav_model_implied`,
-`lav_model_gradient`. Dat zijn interne functies die tussen lavaan-versies kunnen
-veranderen (signatuur, gedrag, slot-namen). Aanbevelingen:
-
-- Gebruik waar mogelijk de **officieel geëxporteerde** hooks. `lavaan` biedt
-  `lav_export_estimation(fit)` dat objective- en gradiëntfuncties naar buiten
-  geeft; gebruik dat i.p.v. `make_grad_F` met `:::`.
-- Casewise scores en informatie via geëxporteerde API: `lavScores()`,
-  `lavInspect(fit, "information")`, `lavInspect(fit, "information.observed")`,
-  `lavInspect(fit, "information.expected")`, `vcov()`.
-- Waar `:::` onvermijdelijk blijft: pin een minimale lavaan-versie, voeg een
-  versie-check toe, en dek af met tests die breken als de internals wijzigen.
-
----
-
-## 4. Dekkingsgaten t.o.v. lavaan's generaliteit (grote implementatie-oppervlak)
-
-De prototype-kern maakt sterke, impliciete aannames. Voor elke lavaan-situatie
-die je wil ondersteunen moet de kern uitgebreid worden:
-
-- **Eén groep.** Overal wordt `[[1]]` gebruikt (`X[[1]]`, `cov[[1]]`, `mean[[1]]`).
-  Multi-group vereist een lus over groepen en blok-combinatie van J/T.
-- **Volledige data + ML.** Geen FIML/missing (`missing="ml"`), geen
-  categorisch/ordinaal (WLSMV/DWLS), geen niet-normaal-robuust (MLR/MLM), geen
-  sampling weights, geen clustered/multilevel. Elk daarvan verandert de casewise
-  likelihood én de afgeleidenstructuur. Beslis de scope en **geef een nette fout**
-  bij niet-ondersteunde estimators i.p.v. stilzwijgend fout te rekenen.
-- **Meanstructure.** Nu ad-hoc: bij ontbrekende μ valt de code terug op
-  `colMeans(X)`. Moet netjes `meanstructure`, `fixed.x`, `conditional.x` en
-  intercepts respecteren.
-- **Constraints en gedefinieerde (`:=`) parameters.** `theta` is hier de vrije
-  `x`-vector. Bij (on)gelijkheidsrestricties moet de derde-orde tensor op de
-  *gerestricteerde* variëteit worden uitgedrukt (constraint-Jacobiaan
-  `lavmodel@con.jac`), of moet je herparametriseren. Dit is precies het raakvlak
-  met restriktor/inequality-constrained inferentie en verdient expliciete aandacht.
+Ontwerpkeuzes die uit de studie meegenomen moeten worden:
+- **Gedeelde/reproduceerbare gewichten** (seed-argument; optie om `W` te
+  exporteren zodat een gebruiker HOIJ tegen een echte bootstrap kan leggen).
+- **Geen stille fallbacks**: NA + reden (fallb_Hobs / fallb_alpha / fallb_deriv)
+  in plaats van geruisloos degraderen naar IJ1.
+- **Vectorisatie van de B-lus** zoals in het script (C = ΔW·S·H⁻¹ als één
+  matrixproduct; J-contractie via `ΔW %*% J_2d`), zodat de kosten na de setup
+  O(B·D²) blijven.
 
 ---
 
-## 5. Numerieke robuustheid
+## 4. Dekkingsgaten t.o.v. lavaan's generaliteit (scopebepaling)
 
-- **Finite differences zijn fragiel.** De tweede- (`delta²`) en derde-orde
-  (`h²·…`) schema's versterken ruis; stapgroottes staan hard-coded. Overweeg
-  Richardson-extrapolatie (`numDeriv::genD`/`hessian`) of, beter,
-  **analytische afgeleiden** waar lavaan die al levert (Δ, de delta-/Jacobiaan
-  van de implied moments). Analytische casewise scores en geobserveerde
-  informatie zijn nauwkeuriger én sneller.
-- **Kosten.** De `J`-lus herberekent de volledige casewise loglik O(D²) keer;
-  `T` roept `grad_F` O(D²) keer aan. Voor realistische D is dat traag. Analytische
-  afgeleiden of vectorisatie zijn nodig voor bruikbare snelheid.
-- **Randgevallen** die afgevangen moeten worden: niet-positief-definiete Σ, bijna
-  singuliere Hessiaan (nu al `MASS::ginv`-fallback), parameters op de rand,
-  slechte kalibratie (`spread` groot → waarschuwen/afbreken).
+De kern gaat impliciet uit van **één groep + complete data + ML zonder
+meanstructure** (overal `[[1]]`; μ-fallback `colMeans(X)`; zie ook de
+covmatrix-bootstrap-route die op sufficiency onder ML leunt). Voor een
+eerste release is dat een verdedigbare scope, mits hard afgedwongen:
 
----
-
-## 6. Software-engineering om er een lavaan-waardig gereedschap van te maken
-
-- **R-pakketstructuur** (standalone of restriktor-adjacent): `DESCRIPTION`,
-  `NAMESPACE`, `Imports: lavaan`, documentatie (roxygen), `testthat`-tests.
-- **Publieke API**: één functie die een *gefitte* lavaan-object neemt, de
-  aannames vooraf valideert (estimator, data, groepen, constraints), en de
-  HOIJ-uitvoer teruggeeft in een net object met `print`/`summary`.
-- **Numerieke safeguards** en informatieve warnings/errors i.p.v. stille NA's.
+- expliciete checks op `estimator == "ML"`, 1 groep, geen missing, geen
+  ordinale variabelen, geen (on)gelijkheidsrestricties — met informatieve
+  foutmeldingen;
+- meanstructure netjes ondersteunen (θ bevat dan ook intercepten; de
+  casewise loglik en scores dekken dat al, alleen de μ-fallback moet weg);
+- daarna uitbreiden: multi-group (blok-structuur in S, J, T), FIML/missing
+  (casewise loglik per missing-patroon), MLR/weights;
+- restricties/`:=`-parameters: `:=`-functionalen zijn al gedekt via φ(θ);
+  échte gelijkheids-/ongelijkheidsrestricties vergen de constraint-Jacobiaan
+  (raakvlak met restriktor) en zijn fase 2+.
 
 ---
 
-## 7. Validatie & verificatie
+## 5. Numeriek & performance
 
-- Behoud en veralgemeen de `calibrate_alpha`-`spread` als interne
-  consistentie-check (numerieke vs. analytische Hessiaan; verwacht α ≈ N).
-- Cross-check de numerieke derde afgeleide tegen een symbolische/analytische
-  referentie op een klein model; controleer symmetrie/invariantie van `T`.
-- **Simulatiestudie**: toon dat de hogere-orde correctie daadwerkelijk de
-  dekking (coverage) / type-I-fout verbetert t.o.v. de standaard Wald/LR, en
-  benchmark tegen bootstrap.
-
----
-
-## 8. Concreet stappenplan (prioriteit)
-
-1. **Definieer en implementeer de assemblagestap** (§2): de eigenlijke HOIJ-formule
-   die `J`, `I` en `T` combineert tot de gecorrigeerde variantie/toets. Zonder dit
-   is er geen output.
-2. **Stap over op geëxporteerde lavaan-API** (`lav_export_estimation`, `lavScores`,
-   `lavInspect(..., "information*")`) om de `:::`-afhankelijkheid en de empirische
-   α-kalibratie te vervangen door één consistente, analytische schaal (§3, §1).
-3. **Vervang finite differences door analytische/Richardson-afgeleiden** voor
-   nauwkeurigheid en snelheid (§5).
-4. **Bepaal de scope en bewaak die**: begin met één groep + complete data + ML,
-   met harde checks die niet-ondersteunde estimators netjes afwijzen (§4).
-5. **Constraints/`:=`-parameters** correct afhandelen op de gerestricteerde
-   variëteit (§4) — sluit aan bij het restriktor-werk.
-6. **Verpak als R-pakket met tests + simulatie-validatie** (§6, §7).
+- FD-stapgroottes (`delta = 1e-5`, `h = 1e-4`) zijn nu hard-coded en op één
+  model getest; maak ze schaal-bewust (relatief t.o.v. |θₖ|) of gebruik
+  `numDeriv::genD`-achtige extrapolatie. De zelftest (a)–(f) uit de studie is
+  het juiste vangnet — die hoort als unit-test in het pakket.
+- Setupkosten: `J` kost O(D²) casewise-loglik-evaluaties, `T` kost O(D²)
+  gradiënt-evaluaties; bij D = 21 is dat ~2×231 evaluaties — prima, maar het
+  groeit kwadratisch. Analytische `Jᵢ` (via Δ) is de belangrijkste versnelling
+  voor grotere modellen.
+- Geheugen: `J` is N×D×D (bij N = 500, D = 21: ~1.8 MB — geen probleem;
+  bij D = 100 wel ~40 MB per 500 cases — documenteren, evt. chunken).
+- Randgevallen: bijna-singuliere `H` (nu `ginv`-fallback), Heywood-cases in
+  replicaten (toelaatbaarheidsdiagnostiek behouden), grote `spread` → fout.
 
 ---
 
-### Bronnen (lavaan-internals & informatiematrix-machinerie)
-- lavaan model-functies: <https://rdrr.io/cran/lavaan/man/lav_model.html>
-- `lav_model_gradient.R`: <https://rdrr.io/cran/lavaan/src/R/lav_model_gradient.R>
-- `lav_model_vcov.R` (informatie/vcov/sandwich): <https://github.com/yrosseel/lavaan/blob/master/R/lav_model_vcov.R>
-- lavaan-class (slots): <https://rdrr.io/cran/lavaan/man/lavaan-class.html>
+## 6. Verpakking, tests en validatie
+
+- **R-pakket** (standalone, `Imports: lavaan`), roxygen-docs, `testthat`:
+  - de pre-flight zelftest (a)–(f) als unit-tests (schaalconventies
+    `lavScores`, `information.observed`, α, T-tensor, V_inf);
+  - regressietest HOIJ-2 vs. exacte bootstrap met *gedeelde* gewichten op een
+    klein model (verschil = approximatiefout, moet klein en stabiel zijn);
+  - equivalentietest IJ1 vs. gesloten-vorm invloedsfunctie.
+- De **simulatiestudie zelf** (coverage, staartbalans, breedte, tijd vs.
+  wald_inf/wald_hw/mc_hw/ij1/boot/BCa) is de wetenschappelijke validatie en
+  bestaat al; het pakket moet dezelfde getallen reproduceren.
+
+---
+
+## 7. Stappenplan (prioriteit)
+
+1. **Extraheer de §8-kern uit `HOIJ_simulatiestudie` naar een generieke
+   functie** `hoijLavaan()` (§3): setup (S, H⁻¹, J, T) + gevectoriseerde
+   replicatielus + SE/percentiel-CI + diagnostiek. Dit is vooral refactoren
+   van bestaande, geteste code.
+2. **Functionalen-interface**: `:=`-achtige expressies → φ(θ) op de vrije
+   parameters (vervangt de hard-coded `functionals_scalar/vec`).
+3. **Vervang `lavaan:::`-aanroepen** door `lav_export_estimation()` /
+   geëxporteerde API; α-kalibratie wordt diagnostiek (§2).
+4. **Scope-checks + meanstructure** (§4).
+5. **Analytische casewise `Jᵢ`** via de Δ-Jacobiaan als performance-upgrade (§5).
+6. **Pakket + tests + reproductie van de simulatieresultaten** (§6).
+7. Fase 2: multi-group, missing (FIML), restricties.
+
+---
+
+### Referenties
+- Giordano, Stephenson, Liu, Jordan & Broderick (2019), *A Swiss Army
+  Infinitesimal Jackknife* (AISTATS) — IJ1; hogere-orde uitbreiding idem
+  (Giordano et al., higher-order IJ).
+- lavaan-internals: `lav_model_gradient.R`
+  (<https://rdrr.io/cran/lavaan/src/R/lav_model_gradient.R>),
+  `lav_model_vcov.R`
+  (<https://github.com/yrosseel/lavaan/blob/master/R/lav_model_vcov.R>),
+  `lav_export_estimation` (lavaan ≥ 0.6-17).
