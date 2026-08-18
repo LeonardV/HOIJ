@@ -5,22 +5,6 @@
 #   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
 #   confidence intervals in SEM without repeated refitting: A tutorial
 #   on the second-order infinitesimal jackknife.
-#
-# Reproduces Section 3 (tutorial example):
-#   Table 2  distributional SD, skewness and 95% limits for ab,
-#            psi_speed and omega_speed
-#   Table 5  the same summaries for |ab|, theta_11, R2_speed and P_M
-#   Figure 1 fig-shape.pdf, replicate densities for the three targets
-#
-# One data set (N = 500) from a weak-effect latent mediation population,
-# and B = 5,000 multinomial weight vectors that are shared by IJ1,
-# HOIJ-2 and the exact bootstrap, so that any difference between the
-# approximate and the exact distribution is approximation error rather
-# than a different set of bootstrap draws.
-#
-# Run 00_install_dependencies.R once before this script.
-# =====================================================================
-
 source("hoij_core.R")
 suppressPackageStartupMessages(library(lavaan))
 
