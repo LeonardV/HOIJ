@@ -1,5 +1,9 @@
 # Onderzoek: HOIJ implementeren in lavaan
 
+> **Note.** These are the authors' Dutch-language development notes on
+> implementing HOIJ-2 inside lavaan. The replication code itself, and all
+> of its documentation, is in English; see `README.md`.
+
 **HOIJ = Higher-Order Infinitesimal Jackknife** (tweede-orde IJ, "HOIJ-2").
 Doel van de implementatie: **standaardfouten en betrouwbaarheidsintervallen**
 voor (functies van) modelparameters van een gefit lavaan-model, zonder
@@ -7,15 +11,15 @@ bootstrap-herfits — de bootstrapverdeling wordt benaderd via een tweede-orde
 Taylor-expansie van de schatter in de observatiegewichten.
 
 Bronnen in deze repo:
-- `kernfuncties` — de rekenkern (casewise loglik, casewise informatie `J`,
+- `hoij_core.R` — de rekenkern (casewise loglik, casewise informatie `J`,
   derde-orde tensor `T`, α-kalibratie).
-- `HOIJ_simulatiestudie` — volledige toepassing: de HOIJ-2-replicatielus
+- `03_simulation_study.R` — volledige toepassing: de HOIJ-2-replicatielus
   (§8, r. 1108–1180), gedeelde multinomiale gewichten, percentiel-CI's, en
   een pre-flight zelftest die alle schaalconventies verifieert (§6, r. 702–778).
 
 ---
 
-## 1. Hoe HOIJ werkt (zoals toegepast in `HOIJ_simulatiestudie`)
+## 1. Hoe HOIJ werkt (zoals toegepast in `03_simulation_study.R`)
 
 Eenmalige setup per gefit model (θ̂ = `coef(fit)`, D parameters, N cases):
 
@@ -164,7 +168,7 @@ eerste release is dat een verdedigbare scope, mits hard afgedwongen:
 
 ## 7. Stappenplan (prioriteit)
 
-1. **Extraheer de §8-kern uit `HOIJ_simulatiestudie` naar een generieke
+1. **Extraheer de §8-kern uit `03_simulation_study.R` naar een generieke
    functie** `hoijLavaan()` (§3): setup (S, H⁻¹, J, T) + gevectoriseerde
    replicatielus + SE/percentiel-CI + diagnostiek. Dit is vooral refactoren
    van bestaande, geteste code.
