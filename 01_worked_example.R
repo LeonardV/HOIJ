@@ -31,7 +31,7 @@ B                <- 5000
 R_MC             <- 5000
 KAPPA_DAMP       <- 0.5
 ALPHA_CI         <- 0.05
-EFFECT_PARS_ZWAK <- c(a = 0.05, b = 0.10)
+EFFECT_PARS_ZWAK <- c(a = 0.10, b = 0.10)
 
 out_dir <- "hoij_we1_intervals_output"
 if (!dir.exists(out_dir)) dir.create(out_dir)
