@@ -253,18 +253,17 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
 # ---------------------------------------------------------------------
 print.hoij_lavaan <- function(x, digits = 3, ...) {
   d <- x$diagnostics
-  cat(sprintf("%s (B = %d weight vectors, %d%% percentile CI)\n",
-              if (d$order == 2L)
-                "HOIJ-2 (second-order infinitesimal jackknife)" else
-                  "IJ1 (first-order infinitesimal jackknife)",
-              d$B, round(100 * d$level)))
-  cat(sprintf("N = %d, D = %d free parameters | setup %.2fs + replicates %.2fs\n",
-              d$N, d$D, d$time_setup_s, d$time_replicates_s))
+  cat(if (d$order == 2L) "HOIJ-2 (second-order infinitesimal jackknife)\n"
+      else "IJ1 (first-order infinitesimal jackknife)\n")
+  cat(sprintf("B = %d weight vectors | %d%% percentile CI | N = %d, D = %d\n",
+              d$B, round(100 * d$level), d$N, d$D))
+  cat(sprintf("setup %.2fs + replicates %.2fs\n",
+              d$time_setup_s, d$time_replicates_s))
   if (d$order == 2L)
-    cat(sprintf("alpha = %.2f (spread %.2e) | damped: %.1f%% (mean s = %.3f)\n",
+    cat(sprintf("alpha = %.2f (spread %.1e) | damped %.1f%% (mean s = %.2f)\n",
                 d$alpha, d$alpha_spread, 100 * d$frac_damped, d$mean_s))
   if (d$frac_inadmissible > 0)
-    cat(sprintf("Inadmissible replicates (negative variance): %.1f%% (%s)\n",
+    cat(sprintf("inadmissible replicates: %.1f%% (%s)\n",
                 100 * d$frac_inadmissible,
                 if (d$admissibility == "keep") "kept" else "dropped"))
   cat("\n")
