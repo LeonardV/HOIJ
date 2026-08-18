@@ -21,8 +21,7 @@ ALPHA_CI <- 0.05     # nominal 95% intervals
 
 ## Weak-effect population: only the two mediation paths are overridden,
 ## all remaining population values are the Holzinger-Swineford estimates.
-## These two values must match the values reported in Section 3.1.
-EFFECT_PARS <- c(a = 0.05, b = 0.10)
+EFFECT_PARS <- c(a = 0.10, b = 0.10)
 
 out_dir <- "hoij_worked_example_output"
 if (!dir.exists(out_dir)) dir.create(out_dir)
