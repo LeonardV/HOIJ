@@ -1,302 +1,58 @@
-# ============================================================
-# HOIJ Timing - tab:timing (mediation D=21 vs. bifactor D=27)
+# =====================================================================
+# 02_timing_comparison.R
 #
-# [W19] Bifactor-model expliciet gekozen (niet in de manuscripttekst
-#       gespecificeerd): orthogonaal bifactor-model op dezelfde 9
-#       Holzinger-Swineford-items -- algemene factor g plus de drie
-#       oorspronkelijke specifieke factoren (visual/textual/speed),
-#       alle onderlinge covarianties op 0 (standaard bifactor-
-#       identificatie). Telling: g-blok 8 vrije ladingen + 1 variantie
-#       = 9; elk specifiek-factor-blok 2 vrije ladingen + 1 variantie
-#       = 3 x 3 = 9; 9 residuele varianties. Totaal D = 9+9+9 = 27,
-#       zoals in de tabel vereist. x1 dient als marker voor zowel g
-#       als visual -- gebruikelijk maar kan Heywood-gevoeligheid
-#       verhogen; vandaar de tryCatch/telling bij de herfits.
-# [W20] Populatie = HS-MLE-schattingen, GEEN effect-override: dit
-#       voorbeeld gaat over rekenkosten, niet over scheefheid, dus
-#       geen reden om van de standaardpopulatie af te wijken.
-# [W21] Timing per replicatie wordt gemeten op een representatieve
-#       steekproef van N_TIMING replicaties (default 200), niet op de
-#       volle B, en daarna geextrapoleerd naar B=1.000/5.000 via
-#       vermenigvuldiging. Dat is precies de rekenregel die de tabel
-#       zelf hanteert (setup + B x per-replicatiekosten), dus geen
-#       verlies aan geldigheid -- alleen nodig omdat 5.000 volledige
-#       herfits van het D=27-model onnodig lang zouden duren voor een
-#       timingschatting.
-# [W22] compute_T_tensor_grad doet exact 2*D^2 gradient-evaluaties
-#       (D diagonaaltermen x 2 evals, D*(D-1)/2 buiten-diagonaaltermen
-#       x 4 evals => 2D + 2D(D-1) = 2D^2), overeenkomstig de claim
-#       "on the order of 2D^2 gradient evaluations" in de tekst.
+# Companion code for:
+#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
+#   confidence intervals in SEM without repeated refitting: A tutorial
+#   on the second-order infinitesimal jackknife.
 #
-# Wall-clock is hardware-afhankelijk; de complexiteitsclaim (1 fit +
-# afgeleiden vs. B volledige herfits) blijft primair, zoals elders in
-# het manuscript benadrukt.
-# ============================================================
+# Reproduces Table 3: timing decomposition of the exact and the
+# approximate bootstrap for two models fitted to N = 500 observations,
+#   (i)  the D = 21 latent mediation model of Section 3, and
+#   (ii) an orthogonal bifactor model for the same nine indicators
+#        (D = 27), which is deliberately harder to refit.
+#
+# The comparison separates the one-time derivative setup from the
+# per-replicate cost. Per-replicate costs are measured on N_TIMING = 200
+# shared weight vectors and extrapolated as
+#   approximate: setup + B * cost per replicate
+#   exact      : B * mean refit time
+# which is exactly the arithmetic reported in the table. Wall-clock
+# numbers are hardware specific; the scaling pattern (one fit plus
+# derivatives, versus B full refits) is the point.
+#
+# Run 00_install_dependencies.R once before this script.
+# =====================================================================
 
+source("hoij_core.R")
+suppressPackageStartupMessages(library(lavaan))
 
-# ─────────────────────────────────────────────────────────────
-# 0. INSTELLINGEN
-# ─────────────────────────────────────────────────────────────
-
-N_EX         <- 500
-N_TIMING     <- 200          # aantal herfits/replicaties voor de timingschatting
-N_FIT_TIMING <- 30           # aantal herhaalde fits voor stabiele single-fit timing
+## --- settings --------------------------------------------------------
+N_EX         <- 500     # sample size of the example data set
+N_TIMING     <- 200     # replicates used for the per-replicate timings
+N_FIT_TIMING <- 30      # repeated fits for a stable single-fit timing
 B_TARGETS    <- c(1000, 5000)
-KAPPA_DAMP   <- 0.5
+KAPPA        <- 0.5     # trust-region damping, as in the other scripts
 SEED_MED     <- 20260706
 SEED_BIF     <- 20260810
-out_dir      <- "hoij_timing_output"
 
+out_dir <- "hoij_timing_output"
 if (!dir.exists(out_dir)) dir.create(out_dir)
 
-
-# ─────────────────────────────────────────────────────────────
-# 1. PACKAGES
-# ─────────────────────────────────────────────────────────────
-
-if (!requireNamespace("lavaan", quietly = TRUE)) install.packages("lavaan")
-library(lavaan)
-cat("lavaan", as.character(packageVersion("lavaan")), "geladen\n")
+cat("lavaan", as.character(packageVersion("lavaan")), "\n")
+hoij_selftest()
 
 
-# ─────────────────────────────────────────────────────────────
-# 2. HOIJ-KERNFUNCTIES
-# ─────────────────────────────────────────────────────────────
-
-compute_loglik_casewise <- function(fit, theta) {
-  X <- fit@Data@X[[1]]
-  N <- nrow(X)
-  p <- ncol(X)
-  
-  GLIST <- lavaan:::lav_model_x2glist(fit@Model, x = theta)
-  implied <- lavaan:::lav_model_implied(fit@Model, GLIST = GLIST)
-  
-  Sigma <- implied$cov[[1]]
-  mu <- implied$mean[[1]]
-  if (is.null(mu) || length(mu) == 0) mu <- colMeans(X)
-  
-  Sigma_inv <- tryCatch(solve(Sigma), error = function(e) MASS::ginv(Sigma))
-  log_det <- determinant(Sigma, logarithm = TRUE)$modulus[1]
-  
-  const <- -0.5 * (p * log(2 * pi) + log_det)
-  X_centered <- sweep(X, 2, mu, "-")
-  quad_form <- rowSums((X_centered %*% Sigma_inv) * X_centered)
-  
-  as.numeric(const - 0.5 * quad_form)
-}
-
-
-compute_all_J <- function(fit, theta0, delta = 1e-5) {
-  D <- length(theta0)
-  N <- nrow(fit@Data@X[[1]])
-  J_array <- array(0, dim = c(N, D, D))
-  
-  ll_0 <- compute_loglik_casewise(fit, theta0)
-  
-  for (k in seq_len(D)) {
-    for (l in k:D) {
-      if (k == l) {
-        tp <- theta0
-        tm <- theta0
-        tp[k] <- tp[k] + delta
-        tm[k] <- tm[k] - delta
-        
-        ll_p <- compute_loglik_casewise(fit, tp)
-        ll_m <- compute_loglik_casewise(fit, tm)
-        
-        J_array[, k, k] <- -((ll_p - 2 * ll_0 + ll_m) / (delta^2))
-      } else {
-        tpp <- theta0
-        tpm <- theta0
-        tmp_ <- theta0
-        tmm <- theta0
-        
-        tpp[k] <- tpp[k] + delta
-        tpp[l] <- tpp[l] + delta
-        
-        tpm[k] <- tpm[k] + delta
-        tpm[l] <- tpm[l] - delta
-        
-        tmp_[k] <- tmp_[k] - delta
-        tmp_[l] <- tmp_[l] + delta
-        
-        tmm[k] <- tmm[k] - delta
-        tmm[l] <- tmm[l] - delta
-        
-        J_array[, k, l] <- -(
-          (
-            compute_loglik_casewise(fit, tpp) -
-              compute_loglik_casewise(fit, tpm) -
-              compute_loglik_casewise(fit, tmp_) +
-              compute_loglik_casewise(fit, tmm)
-          ) / (4 * delta^2)
-        )
-        
-        J_array[, l, k] <- J_array[, k, l]
-      }
-    }
-  }
-  
-  J_array
-}
-
-
-make_grad_F <- function(fit) {
-  lavmodel       <- fit@Model
-  lavsamplestats <- fit@SampleStats
-  lavdata        <- fit@Data
-  lavcache       <- fit@Cache
-  
-  function(theta) {
-    GLIST <- lavaan:::lav_model_x2glist(lavmodel, x = theta)
-    
-    as.numeric(
-      lavaan:::lav_model_gradient(
-        lavmodel       = lavmodel,
-        GLIST          = GLIST,
-        lavsamplestats = lavsamplestats,
-        lavdata        = lavdata,
-        lavcache       = lavcache
-      )
-    )
-  }
-}
-
-
-calibrate_alpha <- function(grad_F, theta0, H_observed, h = 1e-5) {
-  D_loc <- length(theta0)
-  H_grad <- matrix(NA_real_, D_loc, D_loc)
-  
-  for (k in seq_len(D_loc)) {
-    tp <- theta0
-    tm <- theta0
-    tp[k] <- tp[k] + h
-    tm[k] <- tm[k] - h
-    
-    H_grad[, k] <- (grad_F(tp) - grad_F(tm)) / (2 * h)
-  }
-  
-  H_grad <- (H_grad + t(H_grad)) / 2
-  
-  idx <- abs(H_grad) > 1e-6 * max(abs(H_grad))
-  ratio <- as.numeric(H_observed)[idx] / as.numeric(H_grad)[idx]
-  
-  alpha <- median(ratio)
-  spread <- max(abs(ratio / alpha - 1))
-  
-  list(alpha = alpha, spread = spread)
-}
-
-
-compute_T_tensor_grad <- function(grad_F, theta, alpha, h = 1e-4) {
-  D_loc <- length(theta)
-  T_arr <- array(0, dim = c(D_loc, D_loc, D_loc))
-  g0 <- grad_F(theta)
-  
-  for (l in seq_len(D_loc)) {
-    for (m in l:D_loc) {
-      if (l == m) {
-        tp <- theta
-        tm <- theta
-        tp[l] <- tp[l] + h
-        tm[l] <- tm[l] - h
-        
-        col <- (grad_F(tp) - 2 * g0 + grad_F(tm)) / h^2
-      } else {
-        tpp <- theta
-        tpm <- theta
-        tmp_ <- theta
-        tmm <- theta
-        
-        tpp[l] <- tpp[l] + h
-        tpp[m] <- tpp[m] + h
-        
-        tpm[l] <- tpm[l] + h
-        tpm[m] <- tpm[m] - h
-        
-        tmp_[l] <- tmp_[l] - h
-        tmp_[m] <- tmp_[m] + h
-        
-        tmm[l] <- tmm[l] - h
-        tmm[m] <- tmm[m] - h
-        
-        col <- (
-          grad_F(tpp) -
-            grad_F(tpm) -
-            grad_F(tmp_) +
-            grad_F(tmm)
-        ) / (4 * h^2)
-      }
-      
-      T_arr[, l, m] <- alpha * col
-      T_arr[, m, l] <- alpha * col
-    }
-  }
-  
-  T_arr <- (
-    T_arr +
-      aperm(T_arr, c(2, 1, 3)) +
-      aperm(T_arr, c(3, 2, 1)) +
-      aperm(T_arr, c(1, 3, 2)) +
-      aperm(T_arr, c(2, 3, 1)) +
-      aperm(T_arr, c(3, 1, 2))
-  ) / 6
-  
-  T_arr
-}
-
-
-# Herhaalde fit-timing: stabieler dan één system.time()-meting.
-# We gebruiken warm starts, omdat de exacte bootstrap-refits in dit script
-# ook start = fit gebruiken. De rij in de tabel heet daarom expliciet
-# "Median warm-start ML fit".
-time_fit_repeated <- function(model_syntax, dat, start_fit,
-                              std_lv = FALSE,
-                              n_fit_timing = 30) {
-  times <- rep(NA_real_, n_fit_timing)
-  
-  for (ii in seq_len(n_fit_timing)) {
-    gc(FALSE)
-    
-    tt <- system.time({
-      fit_tmp <- tryCatch(
-        sem(
-          model_syntax,
-          data      = dat,
-          se        = "none",
-          estimator = "ML",
-          std.lv    = std_lv,
-          start     = start_fit
-        ),
-        error = function(e) NULL
-      )
-    })["elapsed"]
-    
-    if (!is.null(fit_tmp) && lavInspect(fit_tmp, "converged")) {
-      times[ii] <- as.numeric(tt)
-    }
-  }
-  
-  out <- c(
-    median = median(times, na.rm = TRUE),
-    mean   = mean(times, na.rm = TRUE),
-    min    = min(times, na.rm = TRUE),
-    max    = max(times, na.rm = TRUE),
-    n_fail = sum(is.na(times))
-  )
-  
-  if (!is.finite(out["median"])) {
-    stop("Repeated ML-fit timing failed: no converged repeated fits.")
-  }
-  
-  out
-}
-
-
-# ─────────────────────────────────────────────────────────────
-# 3. MODELDEFINITIES
-# ─────────────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------
+# Models
+#
+# The bifactor model is not specified in the article text. We use the
+# standard orthogonal bifactor structure on the same nine indicators: a
+# general factor g plus the three original group factors, all latent
+# covariances fixed to zero and all factor variances fixed to one
+# (std.lv = TRUE). That gives 18 loadings + 9 residual variances = 27
+# free parameters.
+# ---------------------------------------------------------------------
 model_med <- '
   visual  =~ x1 + x2 + x3
   textual =~ x4 + x5 + x6
@@ -305,7 +61,6 @@ model_med <- '
   speed   ~ a*textual
   visual  ~ b*speed + c*textual
 '
-
 
 model_bifactor <- '
   g       =~ x1 + x2 + x3 + x4 + x5 + x6 + x7 + x8 + x9
@@ -316,431 +71,237 @@ model_bifactor <- '
   g ~~ 0*visual
   g ~~ 0*textual
   g ~~ 0*speed
-  visual ~~ 0*textual
-  visual ~~ 0*speed
+  visual  ~~ 0*textual
+  visual  ~~ 0*speed
   textual ~~ 0*speed
 '
 
 
-# ─────────────────────────────────────────────────────────────
-# 4. GENERIEKE TIMINGFUNCTIE VOOR EEN MODEL
-# ─────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------
+# Median wall-clock time of a single warm-start ML fit
+# ---------------------------------------------------------------------
+time_repeated_fit <- function(model_syntax, dat, start_fit, std_lv, n_fit) {
+  times <- rep(NA_real_, n_fit)
+  for (i in seq_len(n_fit)) {
+    gc(FALSE)
+    tt <- system.time({
+      f <- tryCatch(sem(model_syntax, data = dat, se = "none",
+                        estimator = "ML", std.lv = std_lv, start = start_fit),
+                    error = function(e) NULL)
+    })["elapsed"]
+    if (!is.null(f) && lavInspect(f, "converged")) times[i] <- as.numeric(tt)
+  }
+  out <- c(median = median(times, na.rm = TRUE),
+           mean   = mean(times, na.rm = TRUE),
+           min    = min(times, na.rm = TRUE),
+           max    = max(times, na.rm = TRUE),
+           n_fail = sum(is.na(times)))
+  if (!is.finite(out["median"])) stop("no converged repeated fits")
+  out
+}
 
-time_one_model <- function(model_syntax, D_expected, label,
-                           seed_data, std_lv = FALSE) {
-  cat(sprintf("\n========== %s (D=%d) ==========\n", label, D_expected))
-  
-  fit_pop <- sem(
-    model_syntax,
-    data   = HolzingerSwineford1939,
-    se     = "none",
-    std.lv = std_lv
-  )
-  
-  if (!lavInspect(fit_pop, "converged")) {
-    stop(sprintf("[%s] populatiefit niet geconvergeerd.", label))
-  }
-  
-  pt_pop <- parTable(fit_pop)
-  
+
+# ---------------------------------------------------------------------
+# Full timing decomposition for one model
+# ---------------------------------------------------------------------
+time_one_model <- function(model_syntax, D_expected, label, seed_data,
+                           std_lv = FALSE) {
+  cat(sprintf("\n===== %s (D = %d) =====\n", label, D_expected))
+
+  ## Population = Holzinger-Swineford ML estimates. No effect override:
+  ## this example is about computational cost, not about skewness.
+  fit_pop <- sem(model_syntax, data = HolzingerSwineford1939, se = "none",
+                 std.lv = std_lv)
+  stopifnot(lavInspect(fit_pop, "converged"))
+
   set.seed(seed_data)
-  dat <- simulateData(pt_pop, sample.nobs = N_EX)
-  
-  # Analysefit: deze fit is nodig als referentiepunt voor de HOIJ-setup.
-  # De tijd ervan wordt niet meer als één losse system.time()-meting
-  # gerapporteerd; daarvoor gebruiken we hieronder repeated warm-start timing.
-  fit <- sem(
-    model_syntax,
-    data      = dat,
-    se        = "none",
-    estimator = "ML",
-    std.lv    = std_lv
-  )
-  
-  if (!lavInspect(fit, "converged")) {
-    stop(sprintf("[%s] analysefit op de voorbeelddataset niet geconvergeerd.", label))
-  }
-  
-  theta0   <- coef(fit, type = "free")
-  th_names <- names(theta0)
-  D        <- length(theta0)
-  N        <- nrow(dat)
-  
+  dat <- simulateData(parTable(fit_pop), sample.nobs = N_EX)
+
+  fit <- sem(model_syntax, data = dat, se = "none", estimator = "ML",
+             std.lv = std_lv)
+  stopifnot(lavInspect(fit, "converged"))
+
+  theta0 <- coef(fit, type = "free")
+  D <- length(theta0); N <- nrow(dat)
   stopifnot(D == D_expected)
-  
-  # Stabielere single-fit timing: mediaan over meerdere warm-start fits.
-  fit_timing <- time_fit_repeated(
-    model_syntax  = model_syntax,
-    dat           = dat,
-    start_fit     = fit,
-    std_lv        = std_lv,
-    n_fit_timing  = N_FIT_TIMING
-  )
-  
+
+  fit_timing <- time_repeated_fit(model_syntax, dat, fit, std_lv,
+                                  N_FIT_TIMING)
   t_fit <- unname(fit_timing["median"])
-  
-  cat(sprintf(
-    "D = %d bevestigd; N = %d; median warm-start fit = %.4f s (n=%d, fail=%d)\n",
-    D, N, t_fit, N_FIT_TIMING, as.integer(fit_timing["n_fail"])
-  ))
-  
-  # -- setup: scores + Jhat^-1 --
-  t_sc <- system.time({
+  cat(sprintf("N = %d; median warm-start fit = %.4f s (%d fits, %d failed)\n",
+              N, t_fit, N_FIT_TIMING, as.integer(fit_timing["n_fail"])))
+
+  ## --- setup, timed in the three blocks reported in the table --------
+  t_scores <- system.time({
     Scores <- lavScores(fit, scaling = TRUE)
     H.inv  <- lavTech(fit, "inverted.information.observed")
     H_obs  <- lavTech(fit, "information.observed")
   })["elapsed"]
-  
-  if (is.null(Scores) || is.null(H.inv) || is.null(H_obs)) {
-    stop(sprintf("[%s] Scores/observed information niet beschikbaar.", label))
-  }
-  
-  dimnames(H.inv) <- list(th_names, th_names)
-  
+
   grad_F <- make_grad_F(fit)
-  
   t_cal <- system.time({
     cal <- calibrate_alpha(grad_F, theta0, H_obs)
   })["elapsed"]
-  
-  if (!is.finite(cal$alpha) || cal$spread > 0.1) {
-    stop(sprintf("[%s] alpha-kalibratie mislukt (spread = %.3g).",
+  if (!is.finite(cal$alpha) || cal$spread > 0.1)
+    stop(sprintf("[%s] alpha calibration failed (spread = %.3g)",
                  label, cal$spread))
-  }
-  
-  # -- setup: casewise curvatures J_i --
+
   t_J <- system.time({
-    J_all <- compute_all_J(fit, theta0, delta = 1e-5)
+    J_all <- compute_all_J(fit, theta0)
   })["elapsed"]
-  
-  # -- setup: derde-afgeleide-array Khat --
+
+  ## compute_T_tensor_grad() uses exactly 2 * D^2 gradient evaluations
   t_T <- system.time({
     T_arr <- compute_T_tensor_grad(grad_F, theta0, cal$alpha)
   })["elapsed"]
-  
-  t_setup <- as.numeric(t_sc + t_cal + t_J + t_T)
-  
-  cat(sprintf(
-    "setup: scores+Jhat^-1=%.4f s | J_i=%.4f s | Khat=%.4f s | totaal=%.4f s\n",
-    as.numeric(t_sc + t_cal), as.numeric(t_J), as.numeric(t_T), t_setup
-  ))
-  
-  # -- per-replicatiekosten: approximate bootstrap (HOIJ-2-lus) --
+
+  ## The scale calibration is a fixed cost of obtaining Jhat^-1 on the
+  ## log-likelihood scale, so it is reported with the scores block.
+  t_scores_hinv <- as.numeric(t_scores + t_cal)
+  t_setup <- t_scores_hinv + as.numeric(t_J) + as.numeric(t_T)
+  cat(sprintf("setup: scores+Jhat^-1 = %.4f s | J_i = %.4f s | Khat = %.4f s | total = %.4f s\n",
+              t_scores_hinv, as.numeric(t_J), as.numeric(t_T), t_setup))
+
+  ## --- per-replicate cost: approximate bootstrap ---------------------
   set.seed(seed_data + 1)
   W_counts <- t(rmultinom(N_TIMING, size = N, prob = rep(1 / N, N)))
-  DW <- W_counts - 1L
-  
+  dW <- W_counts - 1L
+
   t_loop <- system.time({
-    G_mat <- DW %*% Scores
-    C_mat <- G_mat %*% H.inv
-    
-    Tmat <- matrix(T_arr, nrow = D)
-    J_all_2d <- matrix(J_all, nrow = N, ncol = D * D)
-    JW_2d <- (DW %*% J_all_2d) / N
-    HT <- H.inv %*% Tmat
-    
-    for (i in seq_len(N_TIMING)) {
-      c_vec <- C_mat[i, ]
-      J_dw_i <- matrix(JW_2d[i, ], D, D)
-      
-      Bc <- drop(H.inv %*% J_dw_i %*% c_vec)
-      
-      kron_cc <- as.vector(tcrossprod(c_vec))
-      Ac <- 0.5 * drop(HT %*% kron_cc)
-      
-      d1 <- -c_vec
-      d2 <- Bc - Ac
-      
-      n1 <- sqrt(sum(d1^2))
-      n2 <- sqrt(sum(d2^2))
-      
-      s <- if (n2 > 0) min(1, KAPPA_DAMP * n1 / n2) else 1
-      
-      invisible(theta0 + d1 + s * d2)
-    }
+    ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
+    hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr, kappa = KAPPA)
   })["elapsed"]
-  
   t_rep_approx <- as.numeric(t_loop) / N_TIMING
-  
-  cat(sprintf(
-    "approximate bootstrap: %.6f s/replicatie (op %d replicaties)\n",
-    t_rep_approx, N_TIMING
-  ))
-  
-  # -- per-replicatiekosten: exacte bootstrap (herfits, warme start) --
-  t_refit_i <- rep(NA_real_, N_TIMING)
+  cat(sprintf("approximate bootstrap: %.6f s per replicate (n = %d)\n",
+              t_rep_approx, N_TIMING))
+
+  ## --- per-replicate cost: exact bootstrap, same weight vectors ------
+  t_refit <- rep(NA_real_, N_TIMING)
   n_fail <- 0L
-  
   for (bb in seq_len(N_TIMING)) {
-    idx <- rep.int(seq_len(N), W_counts[bb, ])
-    dat_b <- dat[idx, , drop = FALSE]
-    
+    dat_b <- dat[rep.int(seq_len(N), W_counts[bb, ]), , drop = FALSE]
     tt <- system.time({
-      fit_b <- tryCatch(
-        sem(
-          model_syntax,
-          data      = dat_b,
-          se        = "none",
-          estimator = "ML",
-          start     = fit,
-          std.lv    = std_lv
-        ),
-        error = function(e) NULL
-      )
+      fit_b <- tryCatch(sem(model_syntax, data = dat_b, se = "none",
+                            estimator = "ML", std.lv = std_lv, start = fit),
+                        error = function(e) NULL)
     })["elapsed"]
-    
     if (!is.null(fit_b) && lavInspect(fit_b, "converged")) {
-      t_refit_i[bb] <- as.numeric(tt)
+      t_refit[bb] <- as.numeric(tt)
     } else {
       n_fail <- n_fail + 1L
     }
   }
-  
-  if (sum(!is.na(t_refit_i)) < 0.5 * N_TIMING) {
-    stop(sprintf(
-      "[%s] te veel niet-geconvergeerde herfits (%d/%d) voor een betrouwbare timingschatting.",
-      label, n_fail, N_TIMING
-    ))
-  }
-  
-  t_refit_mean <- mean(t_refit_i, na.rm = TRUE)
-  
-  cat(sprintf(
-    "exacte bootstrap: %.6f s/replicatie (%d/%d geconvergeerd)\n",
-    t_refit_mean, N_TIMING - n_fail, N_TIMING
-  ))
-  
-  # -- totalen, speed-up, break-even --
-  tot_approx <- setNames(
-    t_setup + B_TARGETS * t_rep_approx,
-    paste0("B", B_TARGETS)
-  )
-  
-  tot_exact <- setNames(
-    B_TARGETS * t_refit_mean,
-    paste0("B", B_TARGETS)
-  )
-  
-  speedup_1000 <- tot_exact["B1000"] / tot_approx["B1000"]
-  
-  Bstar <- if (t_refit_mean > t_rep_approx) {
-    ceiling(t_setup / (t_refit_mean - t_rep_approx))
-  } else {
-    Inf
-  }
-  
-  list(
-    label = label,
-    D = D,
-    
-    t_fit = t_fit,
-    fit_timing = fit_timing,
-    
-    t_scores_hinv = as.numeric(t_sc + t_cal),
-    t_J = as.numeric(t_J),
-    t_T = as.numeric(t_T),
-    t_setup = t_setup,
-    
-    t_rep_approx = t_rep_approx,
-    tot_approx_1000 = tot_approx["B1000"],
-    tot_approx_5000 = tot_approx["B5000"],
-    
-    t_rep_exact = t_refit_mean,
-    tot_exact_1000 = tot_exact["B1000"],
-    tot_exact_5000 = tot_exact["B5000"],
-    
-    speedup_1000 = speedup_1000,
-    Bstar = Bstar,
-    
-    n_fail_exact = n_fail
-  )
+  if (sum(!is.na(t_refit)) < 0.5 * N_TIMING)
+    stop(sprintf("[%s] too many failed refits (%d/%d) for a reliable timing",
+                 label, n_fail, N_TIMING))
+
+  ## Failed refits are excluded from the mean, so the reported exact
+  ## bootstrap cost is conservative.
+  t_rep_exact <- mean(t_refit, na.rm = TRUE)
+  cat(sprintf("exact bootstrap: %.6f s per replicate (%d/%d converged)\n",
+              t_rep_exact, N_TIMING - n_fail, N_TIMING))
+
+  ## --- totals, speed-up and break-even -------------------------------
+  tot_approx <- t_setup + B_TARGETS * t_rep_approx
+  tot_exact  <- B_TARGETS * t_rep_exact
+  Bstar <- if (t_rep_exact > t_rep_approx)
+    ceiling(t_setup / (t_rep_exact - t_rep_approx)) else Inf
+
+  list(label = label, D = D, fit_timing = fit_timing, t_fit = t_fit,
+       t_scores_hinv = t_scores_hinv, t_J = as.numeric(t_J),
+       t_T = as.numeric(t_T), t_setup = t_setup,
+       t_rep_approx = t_rep_approx,
+       tot_approx_1000 = tot_approx[1], tot_approx_5000 = tot_approx[2],
+       t_rep_exact = t_rep_exact,
+       tot_exact_1000 = tot_exact[1], tot_exact_5000 = tot_exact[2],
+       speedup_1000 = tot_exact[1] / tot_approx[1], Bstar = Bstar,
+       n_fail_exact = n_fail)
 }
 
 
-# ─────────────────────────────────────────────────────────────
-# 5. UITVOEREN VOOR BEIDE MODELLEN
-# ─────────────────────────────────────────────────────────────
-
-res_med <- time_one_model(
-  model_syntax = model_med,
-  D_expected   = 21,
-  label        = "Mediation",
-  seed_data    = SEED_MED,
-  std_lv       = FALSE
-)
-
-res_bif <- time_one_model(
-  model_syntax = model_bifactor,
-  D_expected   = 27,
-  label        = "Bifactor",
-  seed_data    = SEED_BIF,
-  std_lv       = TRUE
-)
+# ---------------------------------------------------------------------
+# Run both models
+# ---------------------------------------------------------------------
+res_med <- time_one_model(model_med, D_expected = 21, label = "Mediation",
+                          seed_data = SEED_MED, std_lv = FALSE)
+res_bif <- time_one_model(model_bifactor, D_expected = 27, label = "Bifactor",
+                          seed_data = SEED_BIF, std_lv = TRUE)
 
 
-# ─────────────────────────────────────────────────────────────
-# 6. TABEL tab:timing SAMENSTELLEN EN LATEX GENEREREN
-# ─────────────────────────────────────────────────────────────
-
-fmt <- function(x, d = 3) {
-  formatC(as.numeric(x), digits = d, format = "f")
-}
-
-cat("\n══════════ tab:timing ══════════\n")
-
-row_labels <- c(
-  "Median warm-start ML fit",
-  "casewise scores and Jhat^-1",
-  "casewise curvatures J_i",
-  "third-derivative array Khat",
-  "setup total",
-  "per replication (approx)",
-  "total, B=1000 (approx)",
-  "total, B=5000 (approx)",
-  "per replication (mean refit)",
-  "total, B=1000 (exact)",
-  "total, B=5000 (exact)",
-  "Speed-up factor at B=1000",
-  "Break-even B*"
-)
-
-get_vals <- function(r) {
-  c(
-    r$t_fit,
-    r$t_scores_hinv,
-    r$t_J,
-    r$t_T,
-    r$t_setup,
-    r$t_rep_approx,
-    r$tot_approx_1000,
-    r$tot_approx_5000,
-    r$t_rep_exact,
-    r$tot_exact_1000,
-    r$tot_exact_5000,
-    r$speedup_1000,
-    r$Bstar
-  )
-}
+# ---------------------------------------------------------------------
+# Table 3
+# ---------------------------------------------------------------------
+rows <- list(
+  c("Median warm-start ML fit",            "t_fit",           4),
+  c("casewise scores and Jhat^-1",         "t_scores_hinv",   4),
+  c("casewise curvatures J_i",             "t_J",             4),
+  c("third-derivative array Khat",         "t_T",             4),
+  c("setup total",                         "t_setup",         4),
+  c("per replication (approximate)",       "t_rep_approx",    5),
+  c("total, B = 1,000 (approximate)",      "tot_approx_1000", 3),
+  c("total, B = 5,000 (approximate)",      "tot_approx_5000", 3),
+  c("per replication (mean refit)",        "t_rep_exact",     5),
+  c("total, B = 1,000 (exact)",            "tot_exact_1000",  3),
+  c("total, B = 5,000 (exact)",            "tot_exact_5000",  3),
+  c("Speed-up factor at B = 1,000",        "speedup_1000",    1),
+  c("Break-even B*",                       "Bstar",           0))
 
 tab_timing <- data.frame(
-  Row = row_labels,
-  Mediation_D21 = get_vals(res_med),
-  Bifactor_D27  = get_vals(res_bif)
-)
+  Row           = vapply(rows, `[`, character(1), 1),
+  Mediation_D21 = vapply(rows, function(r) as.numeric(res_med[[r[2]]]),
+                         numeric(1)),
+  Bifactor_D27  = vapply(rows, function(r) as.numeric(res_bif[[r[2]]]),
+                         numeric(1)))
 
+cat("\n===== Table 3 =====\n")
 print(tab_timing, row.names = FALSE, digits = 4)
 
-cat("\n══════════ Fit timing diagnostics ══════════\n")
-cat("Mediation repeated warm-start fit timing:\n")
-print(res_med$fit_timing, digits = 4)
-cat("Bifactor repeated warm-start fit timing:\n")
-print(res_bif$fit_timing, digits = 4)
+fmt <- function(x, d) formatC(as.numeric(x), digits = d, format = "f")
+tex <- file.path(out_dir, "tab_timing.tex")
+con <- file(tex, "w")
+writeLines(c(
+  sprintf("\\emph{Approximate bootstrap: setup (once)} & & \\\\"),
+  sprintf("\\quad casewise scores and $\\Jhat^{-1}$ & %s & %s \\\\",
+          fmt(res_med$t_scores_hinv, 4), fmt(res_bif$t_scores_hinv, 4)),
+  sprintf("\\quad casewise curvatures $J_i$ & %s & %s \\\\",
+          fmt(res_med$t_J, 4), fmt(res_bif$t_J, 4)),
+  sprintf("\\quad third-derivative array $\\Khat$ & %s & %s \\\\",
+          fmt(res_med$t_T, 4), fmt(res_bif$t_T, 4)),
+  sprintf("\\quad setup total & %s & %s \\\\",
+          fmt(res_med$t_setup, 4), fmt(res_bif$t_setup, 4)),
+  "\\addlinespace",
+  sprintf("\\emph{Approximate bootstrap: replication loop} & & \\\\"),
+  sprintf("\\quad per replication & %s & %s \\\\",
+          fmt(res_med$t_rep_approx, 5), fmt(res_bif$t_rep_approx, 5)),
+  sprintf("\\quad total, $B=1{,}000$ & %s & %s \\\\",
+          fmt(res_med$tot_approx_1000, 3), fmt(res_bif$tot_approx_1000, 3)),
+  sprintf("\\quad total, $B=5{,}000$ & %s & %s \\\\",
+          fmt(res_med$tot_approx_5000, 3), fmt(res_bif$tot_approx_5000, 3)),
+  "\\addlinespace",
+  sprintf("\\emph{Exact bootstrap} & & \\\\"),
+  sprintf("\\quad per replication (mean refit) & %s & %s \\\\",
+          fmt(res_med$t_rep_exact, 5), fmt(res_bif$t_rep_exact, 5)),
+  sprintf("\\quad total, $B=1{,}000$ & %s & %s \\\\",
+          fmt(res_med$tot_exact_1000, 3), fmt(res_bif$tot_exact_1000, 3)),
+  sprintf("\\quad total, $B=5{,}000$ & %s & %s \\\\",
+          fmt(res_med$tot_exact_5000, 3), fmt(res_bif$tot_exact_5000, 3)),
+  "\\addlinespace",
+  sprintf("Speed-up factor at $B=1{,}000$ & %s & %s \\\\",
+          fmt(res_med$speedup_1000, 1), fmt(res_bif$speedup_1000, 1)),
+  sprintf("Break-even $B^{*}$ & %s & %s \\\\",
+          format(res_med$Bstar), format(res_bif$Bstar))), con)
+close(con)
+cat("  written:", tex, "\n")
 
-cat("\n══════════ LaTeX-regels (tab:timing) ══════════\n")
+cat(sprintf("\nFailed exact refits during timing: mediation %d/%d, bifactor %d/%d\n",
+            res_med$n_fail_exact, N_TIMING, res_bif$n_fail_exact, N_TIMING))
 
-cat(sprintf(
-  "Median warm-start ML fit & %s & %s \\\\\n",
-  fmt(res_med$t_fit, 4), fmt(res_bif$t_fit, 4)
-))
-
-cat("\\addlinespace\n")
-
-cat(sprintf(
-  "\\quad casewise scores and $\\Jhat^{-1}$ & %s & %s \\\\\n",
-  fmt(res_med$t_scores_hinv, 4), fmt(res_bif$t_scores_hinv, 4)
-))
-
-cat(sprintf(
-  "\\quad casewise curvatures $J_i$ & %s & %s \\\\\n",
-  fmt(res_med$t_J, 4), fmt(res_bif$t_J, 4)
-))
-
-cat(sprintf(
-  "\\quad third-derivative array $\\Khat$ & %s & %s \\\\\n",
-  fmt(res_med$t_T, 4), fmt(res_bif$t_T, 4)
-))
-
-cat(sprintf(
-  "\\quad setup total & %s & %s \\\\\n",
-  fmt(res_med$t_setup, 4), fmt(res_bif$t_setup, 4)
-))
-
-cat(sprintf(
-  "\\quad per replication & %s & %s \\\\\n",
-  fmt(res_med$t_rep_approx, 5), fmt(res_bif$t_rep_approx, 5)
-))
-
-cat(sprintf(
-  "\\quad total, $B=1{,}000$ & %s & %s \\\\\n",
-  fmt(res_med$tot_approx_1000, 3), fmt(res_bif$tot_approx_1000, 3)
-))
-
-cat(sprintf(
-  "\\quad total, $B=5{,}000$ & %s & %s \\\\\n",
-  fmt(res_med$tot_approx_5000, 3), fmt(res_bif$tot_approx_5000, 3)
-))
-
-cat("\\addlinespace\n")
-
-cat(sprintf(
-  "\\quad per replication (mean refit) & %s & %s \\\\\n",
-  fmt(res_med$t_rep_exact, 5), fmt(res_bif$t_rep_exact, 5)
-))
-
-cat(sprintf(
-  "\\quad total, $B=1{,}000$ & %s & %s \\\\\n",
-  fmt(res_med$tot_exact_1000, 3), fmt(res_bif$tot_exact_1000, 3)
-))
-
-cat(sprintf(
-  "\\quad total, $B=5{,}000$ & %s & %s \\\\\n",
-  fmt(res_med$tot_exact_5000, 3), fmt(res_bif$tot_exact_5000, 3)
-))
-
-cat("\\addlinespace\n")
-
-cat(sprintf(
-  "Speed-up factor at $B=1{,}000$ & %s & %s \\\\\n",
-  fmt(res_med$speedup_1000, 1), fmt(res_bif$speedup_1000, 1)
-))
-
-cat(sprintf(
-  "Break-even $B^{*}$ & %s & %s \\\\\n",
-  format(res_med$Bstar), format(res_bif$Bstar)
-))
-
-cat(sprintf(
-  "\n[W20-check] mislukte exacte herfits tijdens timing: mediation=%d/%d, bifactor=%d/%d\n",
-  res_med$n_fail_exact, N_TIMING, res_bif$n_fail_exact, N_TIMING
-))
-
-cat(
-  "(Hoger dan verwacht bij bifactor kan wijzen op Heywood-gevoeligheid\n",
-  "van het dubbele-marker-item x1; zie [W19].)\n",
-  sep = ""
-)
-
-
-# ─────────────────────────────────────────────────────────────
-# 7. WEGSCHRIJVEN
-# ─────────────────────────────────────────────────────────────
-
-ts <- format(Sys.time(), "%Y%m%d_%H%M")
-
-out_csv <- file.path(out_dir, sprintf("tab_timing_%s.csv", ts))
-out_rds <- file.path(out_dir, sprintf("timing_raw_%s.rds", ts))
-
-write.csv(tab_timing, out_csv, row.names = FALSE)
-
-saveRDS(
-  list(
-    res_med      = res_med,
-    res_bif      = res_bif,
-    N_TIMING     = N_TIMING,
-    N_FIT_TIMING = N_FIT_TIMING,
-    B_TARGETS    = B_TARGETS
-  ),
-  out_rds
-)
-
-cat(sprintf("\nOpgeslagen:\n  %s\n  %s\n", out_csv, out_rds))
+stamp <- format(Sys.time(), "%Y%m%d_%H%M")
+write.csv(tab_timing, file.path(out_dir, sprintf("tab_timing_%s.csv", stamp)),
+          row.names = FALSE)
+saveRDS(list(mediation = res_med, bifactor = res_bif, N = N_EX,
+             N_TIMING = N_TIMING, N_FIT_TIMING = N_FIT_TIMING,
+             B_TARGETS = B_TARGETS, kappa = KAPPA,
+             sessionInfo = sessionInfo()),
+        file.path(out_dir, sprintf("timing_raw_%s.rds", stamp)))
+cat(sprintf("Done. Output in %s\n", out_dir))

@@ -1,313 +1,143 @@
-# ============================================================
-# hoij_lavaan(): Higher-Order Infinitesimal Jackknife voor lavaan
+# =====================================================================
+# hoij_lavaan(): HOIJ-2 standard errors and confidence intervals for a
+# fitted lavaan model
 #
-# Berekent standaardfouten en percentiel-betrouwbaarheidsintervallen
-# voor (functies van) de vrije parameters van een gefit lavaan-model,
-# ZONDER bootstrap-herfits. De bootstrapverdeling wordt benaderd met
-# een eerste- (IJ1) of tweede-orde (HOIJ-2) Taylor-expansie van de
-# schatter in de observatiegewichten, zoals in HOIJ_simulatiestudie §8.
+# Companion code for:
+#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
+#   confidence intervals in SEM without repeated refitting: A tutorial
+#   on the second-order infinitesimal jackknife.
 #
-# Per gewichtsvector w (multinomiaal, zoals een bootstrap-resample):
-#   c    = H^{-1} S' (w - 1)                        (invloedsterm)
-#   IJ1  : theta(w) ~ theta_hat - c
-#   HOIJ2: d2 = H^{-1} J(dw) c - 1/2 H^{-1} T (c (x) c)
-#          theta(w) ~ theta_hat - c + s*d2,
-#          s = min(1, kappa*||c||/||d2||)           (trust-region-demping)
+# This is the reusable version of the machinery used in the analysis
+# scripts: it approximates the bootstrap distribution of (functions of)
+# the free parameters from a single fitted model, without refitting.
 #
-# met S = casewise scores (lavScores), H = geobserveerde informatie,
-# J = casewise geobserveerde informatie (N x D x D) en T = derde-orde
-# tensor van de loglikelihood (D x D x D).
+# For each multinomial weight vector w (as a bootstrap resample would
+# produce), with C = (w - 1)' S Jhat^-1 (see hoij_core.R),
+#   IJ1    : theta(w) ~ theta-hat - C                         Eq. (7)
+#   HOIJ-2 : theta(w) ~ theta-hat - C + s * d2                Eq. (8)
+#            d2 = Jhat^-1 J_delta C - 1/2 Jhat^-1 T(C, C)
+#            s  = min(1, kappa * ||C|| / ||d2||)
+# The functional is evaluated on each replicate; the standard error is
+# the standard deviation and the interval the percentile interval of
+# those values.
 #
-# SCOPE (hard afgedwongen, zie .hoij_check_fit):
-#   - 1 groep, complete data (listwise), estimator ML
-#   - geen categorische variabelen, geen gelijkheidsrestricties
-#   - geen multilevel / sampling weights
+# Scope (enforced by .hoij_check_fit):
+#   single group, complete data, estimator ML, continuous indicators,
+#   no equality constraints, no multilevel or sampling weights
 #
-# Afhankelijkheden: lavaan (lavScores, lavTech, lavInspect), MASS (ginv-
-# fallback). De rekenkern gebruikt drie niet-geexporteerde lavaan-
-# functies; zowel de release- als de development-namen worden
-# ondersteund (functie- en argumentnamen worden bij runtime opgelost):
-#   lav_model_x2GLIST  / lav_model_x2glist
-#   lav_model_gradient / lav_model_grad
-#   lav_model_implied  met GLIST= / glist=
-# Zie ONDERZOEK_HOIJ_lavaan.md §2 voor het migratiepad naar de
-# geexporteerde API.
-# ============================================================
+# Usage:
+#   source("hoij_core.R"); source("hoij_lavaan.R")
+#   fit <- sem(model, data = dat)
+#   hoij_lavaan(fit, functional = c("a*b", "speed~~speed"))
+# =====================================================================
+
+if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
 
 
-# ─────────────────────────────────────────────────────────────
-# Interne rekenkern (identiek aan `kernfuncties`, hernoemd .hoij_*)
-# ─────────────────────────────────────────────────────────────
-
-## Versie-robuuste resolver voor niet-geexporteerde lavaan-internals.
-## De development-versie van lavaan hernoemde zowel FUNCTIES als
-## ARGUMENTEN (release 0.6.17 -> development):
-##   lav_model_x2GLIST                -> lav_model_x2glist
-##   lav_model_gradient               -> lav_model_grad
-##   lav_model_implied(GLIST = ...)   -> lav_model_implied(glist = ...)
-## De argument-rename is verraderlijk: lav_model_implied() accepteert
-## `...`, dus een aanroep met GLIST= zou daar GERUISLOOS in verdwijnen
-## en op de gefitte parameters rekenen (J wordt dan stilzwijgend 0).
-## Daarom wordt per functie ook de juiste argumentnaam gedetecteerd, en
-## verifieert hoij_lavaan() bij de start dat een theta-perturbatie de
-## casewise loglik daadwerkelijk verandert.
-.hoij_internals <- local({
-  cache <- NULL
-  function() {
-    if (!is.null(cache)) return(cache)
-    find_fun <- function(nms) {
-      for (nm in nms) {
-        f <- tryCatch(get(nm, envir = asNamespace("lavaan")),
-                      error = function(e) NULL)
-        if (is.function(f)) return(f)
-      }
-      stop("lavaan-internal niet gevonden (geprobeerd: ",
-           paste(nms, collapse = ", "), "); deze lavaan-versie (",
-           as.character(utils::packageVersion("lavaan")),
-           ") wordt niet ondersteund.", call. = FALSE)
-    }
-    glist_arg <- function(f) {
-      fa <- names(formals(f))
-      if ("glist" %in% fa) "glist"
-      else if ("GLIST" %in% fa) "GLIST"
-      else stop("lavaan-internal heeft geen glist/GLIST-argument meer; ",
-                "hoij_lavaan.R moet worden bijgewerkt.", call. = FALSE)
-    }
-    x2glist  <- find_fun(c("lav_model_x2glist", "lav_model_x2GLIST"))
-    implied  <- find_fun("lav_model_implied")
-    gradient <- find_fun(c("lav_model_gradient", "lav_model_grad"))
-    cache <<- list(
-      x2glist       = x2glist,
-      implied       = implied,
-      gradient      = gradient,
-      implied_glist = glist_arg(implied),
-      grad_glist    = glist_arg(gradient))
-    cache
-  }
-})
-
-.hoij_loglik_casewise <- function(fit, theta) {
-  X <- fit@Data@X[[1]]
-  N <- nrow(X); p <- ncol(X)
-  ints <- .hoij_internals()
-  GLIST <- ints$x2glist(fit@Model, x = theta)
-  impl_args <- list(fit@Model); impl_args[[ints$implied_glist]] <- GLIST
-  implied <- do.call(ints$implied, impl_args)
-  Sigma <- implied$cov[[1]]
-  mu <- implied$mean[[1]]
-  if (is.null(mu) || length(mu) == 0) mu <- colMeans(X)
-  Sigma_inv <- tryCatch(solve(Sigma), error = function(e) MASS::ginv(Sigma))
-  log_det <- determinant(Sigma, logarithm = TRUE)$modulus[1]
-  const <- -0.5 * (p * log(2 * pi) + log_det)
-  X_centered <- sweep(X, 2, mu, "-")
-  quad_form <- rowSums((X_centered %*% Sigma_inv) * X_centered)
-  as.numeric(const - 0.5 * quad_form)
-}
-
-.hoij_all_J <- function(fit, theta0, delta = 1e-5) {
-  D <- length(theta0); N <- nrow(fit@Data@X[[1]])
-  J_array <- array(0, dim = c(N, D, D))
-  ll_0 <- .hoij_loglik_casewise(fit, theta0)
-  for (k in 1:D) {
-    for (l in k:D) {
-      if (k == l) {
-        tp <- theta0; tp[k] <- tp[k] + delta
-        tm <- theta0; tm[k] <- tm[k] - delta
-        ll_p <- .hoij_loglik_casewise(fit, tp)
-        ll_m <- .hoij_loglik_casewise(fit, tm)
-        J_array[, k, k] <- -((ll_p - 2*ll_0 + ll_m) / (delta^2))
-      } else {
-        tpp <- theta0; tpp[k] <- tpp[k]+delta; tpp[l] <- tpp[l]+delta
-        tpm <- theta0; tpm[k] <- tpm[k]+delta; tpm[l] <- tpm[l]-delta
-        tmp_ <- theta0; tmp_[k] <- tmp_[k]-delta; tmp_[l] <- tmp_[l]+delta
-        tmm <- theta0; tmm[k] <- tmm[k]-delta; tmm[l] <- tmm[l]-delta
-        J_array[, k, l] <- -((.hoij_loglik_casewise(fit, tpp) -
-                                .hoij_loglik_casewise(fit, tpm) -
-                                .hoij_loglik_casewise(fit, tmp_) +
-                                .hoij_loglik_casewise(fit, tmm)) / (4*delta^2))
-        J_array[, l, k] <- J_array[, k, l]
-      }
-    }
-  }
-  J_array
-}
-
-.hoij_grad_F <- function(fit) {
-  lavmodel       <- fit@Model
-  lavsamplestats <- fit@SampleStats
-  lavdata        <- fit@Data
-  lavcache       <- fit@Cache
-  ints <- .hoij_internals()
-  function(theta) {
-    GLIST <- ints$x2glist(lavmodel, x = theta)
-    grad_args <- list(lavmodel       = lavmodel,
-                      lavsamplestats = lavsamplestats,
-                      lavdata        = lavdata,
-                      lavcache       = lavcache)
-    grad_args[[ints$grad_glist]] <- GLIST
-    as.numeric(do.call(ints$gradient, grad_args))
-  }
-}
-
-.hoij_calibrate_alpha <- function(grad_F, theta0, H_observed, h = 1e-5) {
-  D_loc <- length(theta0)
-  H_grad <- matrix(NA_real_, D_loc, D_loc)
-  for (k in 1:D_loc) {
-    tp <- theta0; tp[k] <- tp[k] + h
-    tm <- theta0; tm[k] <- tm[k] - h
-    H_grad[, k] <- (grad_F(tp) - grad_F(tm)) / (2 * h)
-  }
-  H_grad <- (H_grad + t(H_grad)) / 2
-  idx    <- abs(H_grad) > 1e-6 * max(abs(H_grad))
-  ratio  <- as.numeric(H_observed)[idx] / as.numeric(H_grad)[idx]
-  alpha  <- median(ratio)
-  spread <- max(abs(ratio / alpha - 1))
-  list(alpha = alpha, spread = spread)
-}
-
-.hoij_T_tensor <- function(grad_F, theta, alpha, h = 1e-4) {
-  D_loc <- length(theta)
-  T_arr <- array(0, dim = c(D_loc, D_loc, D_loc))
-  g0    <- grad_F(theta)
-  for (l in 1:D_loc) {
-    for (m in l:D_loc) {
-      if (l == m) {
-        tp <- theta; tp[l] <- tp[l] + h
-        tm <- theta; tm[l] <- tm[l] - h
-        col <- (grad_F(tp) - 2 * g0 + grad_F(tm)) / h^2
-      } else {
-        tpp <- theta; tpp[l] <- tpp[l] + h; tpp[m] <- tpp[m] + h
-        tpm <- theta; tpm[l] <- tpm[l] + h; tpm[m] <- tpm[m] - h
-        tmp_ <- theta; tmp_[l] <- tmp_[l] - h; tmp_[m] <- tmp_[m] + h
-        tmm <- theta; tmm[l] <- tmm[l] - h; tmm[m] <- tmm[m] - h
-        col <- (grad_F(tpp) - grad_F(tpm) - grad_F(tmp_) + grad_F(tmm)) / (4*h^2)
-      }
-      T_arr[, l, m] <- alpha * col
-      T_arr[, m, l] <- alpha * col
-    }
-  }
-  T_arr <- (T_arr +
-              aperm(T_arr, c(2, 1, 3)) + aperm(T_arr, c(3, 2, 1)) +
-              aperm(T_arr, c(1, 3, 2)) + aperm(T_arr, c(2, 3, 1)) +
-              aperm(T_arr, c(3, 1, 2))) / 6
-  T_arr
-}
-
-
-# ─────────────────────────────────────────────────────────────
-# Scope-validatie: geen stille degradatie, informatieve fouten
-# ─────────────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------
+# Scope checks
+# ---------------------------------------------------------------------
 .hoij_check_fit <- function(fit) {
   if (!inherits(fit, "lavaan"))
-    stop("'fit' moet een gefit lavaan-object zijn.", call. = FALSE)
+    stop("'fit' must be a fitted lavaan object.", call. = FALSE)
   if (!isTRUE(lavaan::lavInspect(fit, "converged")))
-    stop("Het lavaan-model is niet geconvergeerd.", call. = FALSE)
+    stop("The lavaan model did not converge.", call. = FALSE)
   if (lavaan::lavInspect(fit, "ngroups") != 1L)
-    stop("hoij_lavaan() ondersteunt vooralsnog alleen 1 groep.", call. = FALSE)
+    stop("hoij_lavaan() currently supports single-group models only.",
+         call. = FALSE)
   if (lavaan::lavInspect(fit, "nlevels") > 1L)
-    stop("hoij_lavaan() ondersteunt geen multilevel-modellen.", call. = FALSE)
+    stop("hoij_lavaan() does not support multilevel models.", call. = FALSE)
   opt <- lavaan::lavInspect(fit, "options")
   if (!opt$estimator %in% "ML")
-    stop("hoij_lavaan() vereist estimator = \"ML\" (nu: ",
+    stop("hoij_lavaan() requires estimator = \"ML\" (found: ",
          opt$estimator, ").", call. = FALSE)
-  if (opt$missing %in% c("ml", "fiml", "ml.x", "two.stage", "robust.two.stage"))
-    stop("hoij_lavaan() ondersteunt geen missing-data-methoden (missing = \"",
-         opt$missing, "\"); gebruik complete data.", call. = FALSE)
+  if (opt$missing %in% c("ml", "fiml", "ml.x", "two.stage",
+                         "robust.two.stage"))
+    stop("hoij_lavaan() requires complete data (missing = \"", opt$missing,
+         "\" is not supported).", call. = FALSE)
   if (isTRUE(lavaan::lavInspect(fit, "categorical")))
-    stop("hoij_lavaan() ondersteunt geen categorische (ordinale) variabelen.",
+    stop("hoij_lavaan() does not support categorical indicators.",
          call. = FALSE)
   if (fit@Model@eq.constraints ||
       (!is.null(fit@Model@ceq.function) &&
        !identical(body(fit@Model@ceq.function), quote(NULL)) &&
-       length(fit@Model@ceq.linear.idx) + length(fit@Model@ceq.nonlinear.idx) > 0))
-    stop("hoij_lavaan() ondersteunt geen gelijkheidsrestricties; ",
-         "gedefinieerde parameters kunnen wel via 'functional'.", call. = FALSE)
+       length(fit@Model@ceq.linear.idx) +
+       length(fit@Model@ceq.nonlinear.idx) > 0))
+    stop("hoij_lavaan() does not support equality constraints; defined ",
+         "parameters can be passed through 'functional' instead.",
+         call. = FALSE)
   invisible(TRUE)
 }
 
 
-# ─────────────────────────────────────────────────────────────
-# Functionalen-interface
-#   NULL           -> alle vrije parameters
-#   character      -> expressies in parameternamen, bv. "a*b" of
-#                     "1 - `speed~~speed` / `visual~~visual`"
-#                     (niet-syntactische namen tussen backticks)
-#   function       -> phi(theta) met theta = benoemde vrije-parametervector
-#   (benoemde) lijst van functies en/of expressies mag ook
-# ─────────────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------
+# Functional interface
+#   NULL       -> every free parameter
+#   character  -> an expression in parameter names, e.g. "a*b" or
+#                 "1 - `speed~~speed` / `visual~~visual`"
+#                 (names that are not syntactic R names need backticks)
+#   function   -> phi(theta), with theta the named free-parameter vector
+#   a (named) list of expressions and/or functions is also allowed
+# ---------------------------------------------------------------------
 .hoij_make_functionals <- function(functional, th_names) {
   as_fun <- function(x, label) {
     if (is.function(x)) return(x)
     if (is.character(x) && length(x) == 1L) {
-      ## backtick-vrije parameternamen die geen geldige R-namen zijn
-      ## (bv. speed~~speed) kunnen in de expressie met backticks worden
-      ## aangeduid; evaluatie gebeurt in een omgeving met alle namen.
       expr <- parse(text = x)[[1]]
       return(function(theta) eval(expr, envir = as.list(theta)))
     }
-    stop("Functionaal '", label, "' moet een functie of een ",
-         "character-expressie zijn.", call. = FALSE)
+    stop("Functional '", label, "' must be a function or a character ",
+         "expression.", call. = FALSE)
   }
   if (is.null(functional)) {
-    fns <- lapply(th_names, function(nm) {
-      force(nm); function(theta) unname(theta[nm])
-    })
+    fns <- lapply(th_names, function(nm) { force(nm)
+      function(theta) unname(theta[nm]) })
     names(fns) <- th_names
     return(fns)
   }
   if (is.function(functional)) functional <- list(functional)
   if (is.character(functional)) functional <- as.list(functional)
   if (!is.list(functional))
-    stop("'functional' moet NULL, een character-vector, een functie of ",
-         "een lijst daarvan zijn.", call. = FALSE)
+    stop("'functional' must be NULL, a character vector, a function, or a ",
+         "list of these.", call. = FALSE)
+
   nms <- names(functional)
   if (is.null(nms)) nms <- rep("", length(functional))
-  auto <- vapply(seq_along(functional), function(i) {
-    if (nzchar(nms[i])) nms[i]
-    else if (is.character(functional[[i]])) functional[[i]]
-    else sprintf("phi%d", i)
-  }, character(1))
+  labels <- vapply(seq_along(functional), function(i)
+    if (nzchar(nms[i])) nms[i] else
+      if (is.character(functional[[i]])) functional[[i]] else
+        sprintf("phi%d", i), character(1))
+
   fns <- lapply(seq_along(functional), function(i)
-    as_fun(functional[[i]], auto[i]))
-  names(fns) <- auto
+    as_fun(functional[[i]], labels[i]))
+  names(fns) <- labels
   fns
 }
 
 
-# ─────────────────────────────────────────────────────────────
-# Hoofdfunctie
-# ─────────────────────────────────────────────────────────────
-
-#' Higher-Order Infinitesimal Jackknife SE's en CI's voor lavaan
-#'
-#' @param fit        geconvergeerd lavaan-object (1 groep, ML, complete data)
-#' @param functional NULL (alle vrije parameters), character-expressie(s) in
-#'                   parameternamen (bv. "a*b"), functie(s) phi(theta), of
-#'                   een (benoemde) lijst daarvan
-#' @param B          aantal multinomiale gewichtsvectoren (pseudo-replicaten)
-#' @param order      1 = IJ1 (lineair), 2 = HOIJ-2 (default)
-#' @param kappa      trust-region-demping van de tweede-orde stap
-#' @param level      betrouwbaarheidsniveau van het percentielinterval
-#' @param admissibility "keep" (default: alle replicaten tellen mee) of
-#'                   "drop" (replicaten met negatieve variantieparameters
-#'                   worden voor SE/CI geschrapt; sensitiviteitsvariant)
-#' @param alpha_spread_tol tolerantie op de alpha-kalibratiespread
-#' @param seed       optionele seed voor de gewichtstrekking
-#' @param details    TRUE: bewaar ook theta-replicaten en gewichtsmatrix W
-#'                   (voor benchmarking tegen een bootstrap met dezelfde W)
-#' @return object van klasse "hoij_lavaan" met $results (est, se, lo, hi),
-#'         $diagnostics en optioneel $replicates/$weights
-hoij_lavaan <- function(fit,
-                        functional = NULL,
-                        B = 1000L,
-                        order = 2L,
-                        kappa = 0.5,
-                        level = 0.95,
+# ---------------------------------------------------------------------
+# Main function
+#
+# @param fit         converged lavaan object (single group, ML, complete data)
+# @param functional  NULL, character expression(s), function(s), or a list
+# @param B           number of multinomial weight vectors
+# @param order       1 = IJ1 (linear), 2 = HOIJ-2 (default)
+# @param kappa       trust-region damping of the second-order step;
+#                    kappa = Inf gives Eq. (8) unmodified
+# @param level       confidence level of the percentile interval
+# @param admissibility "keep" (default: all replicates count) or "drop"
+#                    (replicates with a negative variance parameter are
+#                    removed before the SE and interval are computed)
+# @param alpha_spread_tol tolerance on the scale calibration
+# @param seed        optional seed for the weight draws
+# @param details     TRUE: also return the replicates and the weight matrix
+# @return object of class "hoij_lavaan" with $results (est, se, lo, hi),
+#         $diagnostics and optionally $replicates / $weights
+# ---------------------------------------------------------------------
+hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
+                        kappa = 0.5, level = 0.95,
                         admissibility = c("keep", "drop"),
-                        alpha_spread_tol = 0.1,
-                        seed = NULL,
+                        alpha_spread_tol = 0.1, seed = NULL,
                         details = FALSE) {
 
   admissibility <- match.arg(admissibility)
@@ -321,115 +151,96 @@ hoij_lavaan <- function(fit,
   N        <- nrow(fit@Data@X[[1]])
   fns      <- .hoij_make_functionals(functional, th_names)
 
-  ## Sanity-check op de internals-koppeling: een perturbatie van theta
-  ## MOET de casewise loglik veranderen. Vangt stille breuken af zoals
-  ## een genegeerd glist/GLIST-argument na een lavaan-rename (de loglik
-  ## zou dan constant zijn en J stilzwijgend 0 worden).
+  ## Guard against a silently broken link to lavaan's internals: a
+  ## perturbation of theta must change the casewise log-likelihood.
   th_pert <- theta0; th_pert[1] <- th_pert[1] + 1e-3
-  if (identical(.hoij_loglik_casewise(fit, theta0),
-                .hoij_loglik_casewise(fit, th_pert)))
-    stop("Interne lavaan-koppeling defect: een theta-perturbatie ",
-         "verandert de casewise loglikelihood niet. Waarschijnlijk is ",
-         "een lavaan-internal hernoemd; werk hoij_lavaan.R bij.",
+  if (identical(compute_loglik_casewise(fit, theta0),
+                compute_loglik_casewise(fit, th_pert)))
+    stop("Broken link to the lavaan internals: perturbing theta does not ",
+         "change the casewise log-likelihood. See 00_install_dependencies.R.",
          call. = FALSE)
 
-  ## indices variantieparameters (toelaatbaarheid replicaten)
+  ## variance parameters, used for the admissibility of replicates
   spl <- strsplit(th_names, "~~", fixed = TRUE)
-  var_idx <- which(vapply(spl, function(z)
-    length(z) == 2 && z[1] == z[2], logical(1)))
+  var_idx <- which(vapply(spl, function(z) length(z) == 2 && z[1] == z[2],
+                          logical(1)))
 
-  ## ── eenmalige setup ──
+  ## --- one-time setup ------------------------------------------------
   t0 <- proc.time()[["elapsed"]]
   Scores <- lavaan::lavScores(fit, scaling = TRUE)              # N x D
   H.inv  <- lavaan::lavTech(fit, "inverted.information.observed")
   if (is.null(Scores) || is.null(H.inv))
-    stop("Scores of geobserveerde informatie niet beschikbaar voor dit model.",
+    stop("Scores or observed information are not available for this model.",
          call. = FALSE)
 
-  alpha <- NA_real_; alpha_spread <- NA_real_
-  Tmat <- NULL; J_2d <- NULL
+  alpha <- NA_real_; alpha_spread <- NA_real_; J_all <- NULL; T_arr <- NULL
   if (order == 2L) {
     H_obs  <- lavaan::lavTech(fit, "information.observed")
-    grad_F <- .hoij_grad_F(fit)
-    cal <- .hoij_calibrate_alpha(grad_F, theta0, H_obs)
+    grad_F <- make_grad_F(fit)
+    cal <- calibrate_alpha(grad_F, theta0, H_obs)
     alpha <- cal$alpha; alpha_spread <- cal$spread
     if (!is.finite(alpha) || cal$spread > alpha_spread_tol)
-      stop(sprintf(paste0("Alpha-kalibratie inconsistent (spread = %.3g > %.3g): ",
-                          "de tweede-orde stap is voor dit model niet ",
-                          "betrouwbaar berekenbaar. Gebruik order = 1 (IJ1) ",
-                          "of een bootstrap."), cal$spread, alpha_spread_tol),
+      stop(sprintf(paste0("Scale calibration is inconsistent (spread = %.3g ",
+                          "> %.3g): the second-order step cannot be computed ",
+                          "reliably for this model. Use order = 1 (IJ1) or a ",
+                          "bootstrap."), cal$spread, alpha_spread_tol),
            call. = FALSE)
-    T_arr <- .hoij_T_tensor(grad_F, theta0, alpha)
-    J_all <- .hoij_all_J(fit, theta0)
-    Tmat  <- matrix(T_arr, nrow = D)                            # D x D^2
-    J_2d  <- matrix(J_all, nrow = N, ncol = D * D)              # N x D^2
+    T_arr <- compute_T_tensor_grad(grad_F, theta0, alpha)
+    J_all <- compute_all_J(fit, theta0)
   }
   t_setup <- proc.time()[["elapsed"]] - t0
 
-  ## ── gewichten en replicatielus (gevectoriseerd waar mogelijk) ──
+  ## --- weights and replicates ----------------------------------------
   t0 <- proc.time()[["elapsed"]]
   W  <- t(rmultinom(B, size = N, prob = rep(1, N)))             # B x N
   dW <- W - 1L
-  C_mat <- (dW %*% Scores) %*% H.inv                            # B x D
 
-  theta_rep <- sweep(-C_mat, 2, theta0, "+")                    # IJ1
-  s_vec <- rep(1, B)
+  ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
   if (order == 2L) {
-    JW <- (dW %*% J_2d) / N                                     # B x D^2
-    HT <- H.inv %*% Tmat                                        # D x D^2
-    for (i in seq_len(B)) {
-      c_vec <- C_mat[i, ]
-      J_dw  <- matrix(JW[i, ], D, D)
-      Bc    <- drop(H.inv %*% (J_dw %*% c_vec))
-      Ac    <- 0.5 * drop(HT %*% as.vector(tcrossprod(c_vec)))
-      d2    <- Bc - Ac
-      n1 <- sqrt(sum(c_vec^2)); n2 <- sqrt(sum(d2^2))
-      s  <- if (n2 > 0) min(1, kappa * n1 / n2) else 1
-      s_vec[i] <- s
-      theta_rep[i, ] <- theta0 - c_vec + s * d2
-    }
+    h2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr,
+                           kappa = kappa)
+    theta_rep <- h2$theta; s_vec <- h2$s
+  } else {
+    theta_rep <- ij1$theta; s_vec <- rep(1, B)
   }
-  colnames(theta_rep) <- th_names
   inadmiss <- if (length(var_idx))
-    apply(theta_rep[, var_idx, drop = FALSE] < 0, 1, any)
-  else rep(FALSE, B)
+    apply(theta_rep[, var_idx, drop = FALSE] < 0, 1, any) else rep(FALSE, B)
   t_rep <- proc.time()[["elapsed"]] - t0
 
-  ## ── SE + percentiel-CI per functionaal ──
+  ## --- SE and percentile interval per functional ----------------------
   keep <- if (admissibility == "drop") !inadmiss else rep(TRUE, B)
   if (sum(keep) < max(40L, ceiling(0.5 * B)))
-    warning("Minder dan de helft van de replicaten toelaatbaar; ",
-            "SE/CI zijn mogelijk onbetrouwbaar.", call. = FALSE)
+    warning("Fewer than half of the replicates are admissible; the ",
+            "standard errors and intervals may be unreliable.", call. = FALSE)
   pr <- c((1 - level) / 2, 1 - (1 - level) / 2)
 
   res <- do.call(rbind, lapply(names(fns), function(nm) {
     phi  <- fns[[nm]]
     est  <- tryCatch(as.numeric(phi(theta0)), error = function(e) NA_real_)
     vals <- vapply(seq_len(B), function(i)
-      tryCatch(as.numeric(phi(theta_rep[i, ])),
-               error = function(e) NA_real_), numeric(1))
+      tryCatch(as.numeric(phi(theta_rep[i, ])), error = function(e) NA_real_),
+      numeric(1))
     v <- vals[keep & is.finite(vals)]
     if (length(v) >= 40L) {
-      q  <- quantile(v, pr, names = FALSE, type = 7)
-      se <- sd(v)
-    } else { q <- c(NA_real_, NA_real_); se <- NA_real_ }
-    data.frame(functional = nm, est = est, se = se,
-               lo = q[1], hi = q[2],
+      q <- quantile(v, pr, names = FALSE, type = 7); se <- sd(v)
+    } else {
+      q <- c(NA_real_, NA_real_); se <- NA_real_
+    }
+    data.frame(functional = nm, est = est, se = se, lo = q[1], hi = q[2],
                n_used = length(v), stringsAsFactors = FALSE)
   }))
   rownames(res) <- NULL
 
   out <- list(
-    results     = res,
+    results = res,
     diagnostics = list(
       order = order, B = B, kappa = kappa, level = level,
-      admissibility = admissibility,
-      alpha = alpha, alpha_spread = alpha_spread,
+      admissibility = admissibility, alpha = alpha,
+      alpha_spread = alpha_spread,
       frac_damped = if (order == 2L) mean(s_vec < 1) else NA_real_,
-      mean_s      = if (order == 2L) mean(s_vec) else NA_real_,
+      mean_s = if (order == 2L) mean(s_vec) else NA_real_,
       frac_inadmissible = mean(inadmiss),
-      time_setup_s = t_setup, time_replicates_s = t_rep,
-      N = N, D = D),
+      time_setup_s = t_setup, time_replicates_s = t_rep, N = N, D = D),
     call = match.call())
   if (details) { out$replicates <- theta_rep; out$weights <- W }
   class(out) <- "hoij_lavaan"
@@ -437,25 +248,25 @@ hoij_lavaan <- function(fit,
 }
 
 
-# ─────────────────────────────────────────────────────────────
-# Print-methode
-# ─────────────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------
+# Print method
+# ---------------------------------------------------------------------
 print.hoij_lavaan <- function(x, digits = 3, ...) {
   d <- x$diagnostics
-  cat(sprintf("%s (B = %d gewichtsvectoren, %d%% percentiel-CI)\n",
-              if (d$order == 2L) "HOIJ-2 (higher-order infinitesimal jackknife)"
-              else "IJ1 (eerste-orde infinitesimal jackknife)",
+  cat(sprintf("%s (B = %d weight vectors, %d%% percentile CI)\n",
+              if (d$order == 2L)
+                "HOIJ-2 (second-order infinitesimal jackknife)" else
+                  "IJ1 (first-order infinitesimal jackknife)",
               d$B, round(100 * d$level)))
-  cat(sprintf("N = %d, D = %d vrije parameters | setup %.2fs + replicaten %.2fs\n",
+  cat(sprintf("N = %d, D = %d free parameters | setup %.2fs + replicates %.2fs\n",
               d$N, d$D, d$time_setup_s, d$time_replicates_s))
   if (d$order == 2L)
-    cat(sprintf("alpha = %.2f (spread %.2e) | gedempt: %.1f%% (mean s = %.3f)\n",
+    cat(sprintf("alpha = %.2f (spread %.2e) | damped: %.1f%% (mean s = %.3f)\n",
                 d$alpha, d$alpha_spread, 100 * d$frac_damped, d$mean_s))
   if (d$frac_inadmissible > 0)
-    cat(sprintf("Niet-toelaatbare replicaten (negatieve variantie): %.1f%% (%s)\n",
+    cat(sprintf("Inadmissible replicates (negative variance): %.1f%% (%s)\n",
                 100 * d$frac_inadmissible,
-                if (d$admissibility == "keep") "meegenomen" else "geschrapt"))
+                if (d$admissibility == "keep") "kept" else "dropped"))
   cat("\n")
   r <- x$results
   r[c("est", "se", "lo", "hi")] <- lapply(r[c("est", "se", "lo", "hi")],
