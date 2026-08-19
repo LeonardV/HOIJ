@@ -60,6 +60,14 @@ resolves both spellings at run time and `hoij_selftest()` verifies every
 scaling convention it relies on, but the reported results were produced
 with the development version; see `00_install_dependencies.R`.
 
+The third derivatives are second differences of lavaan's analytic
+gradient, taken without any rescaling: for normal-theory ML the function
+lavaan optimises is the negative mean log-likelihood up to a constant,
+which self-test (b) verifies. `hoij_lavaan()` therefore refuses
+`likelihood = "wishart"`, which rescales that objective by roughly
+N/(N-1). `check_gradient_hessian()` confirms that the finite differences
+reproduce lavaan's analytic observed information before they are used.
+
 **Trust-region damping.** The replication loops shrink the second-order
 step so that its norm is at most `kappa` times the norm of the
 first-order step (default `kappa = 0.5`); `kappa = Inf` reproduces
