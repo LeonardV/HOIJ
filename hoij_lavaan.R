@@ -122,8 +122,12 @@ if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
 # @param functional  NULL, character expression(s), function(s), or a list
 # @param B           number of multinomial weight vectors
 # @param order       1 = IJ1 (linear), 2 = HOIJ-2 (default)
-# @param kappa       trust-region damping of the second-order step;
-#                    kappa = Inf gives Eq. (8) unmodified
+# @param kappa       trust-region damping of the second-order step: its
+#                    norm is capped at kappa times the norm of the
+#                    first-order step. The bound is active for a
+#                    sizeable minority of weight vectors, so report
+#                    diagnostics$frac_damped; kappa = Inf gives Eq. (8)
+#                    unmodified
 # @param level       confidence level of the percentile interval
 # @param admissibility "keep" (default: all replicates count) or "drop"
 #                    (replicates with a negative variance parameter are

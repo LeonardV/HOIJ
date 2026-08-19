@@ -244,9 +244,16 @@ ij1_replicates <- function(theta0, Scores, H.inv, dW) {
 # so that theta-hat + d1 + (Bc - Ac) is exactly Eq. (8).
 #
 # kappa applies a trust region: the second-order step is shrunk so that
-# its norm is at most kappa * ||d1||. This is a numerical safeguard for
-# the occasional weight vector where the quadratic term dominates the
-# linear one; kappa = Inf reproduces Eq. (8) unmodified.
+# its norm is at most kappa * ||d1||. The correction is one order smaller
+# than the step it corrects (O_p(N^-1) against O_p(N^-1/2)), but only on
+# average: in the upper tail of the weight distribution it can exceed the
+# linear step, which is where the quadratic model stops being credible
+# and the replicate can leave the admissible parameter space. With the
+# default kappa = 0.5 the bound is active for a sizeable minority of
+# weight vectors (roughly 20% at N = 300 and 40% at N = 100 for the
+# mediation model), so it is part of the estimator rather than a rare
+# repair: report the damped fraction, and compare against kappa = Inf,
+# which reproduces Eq. (8) unmodified.
 # ---------------------------------------------------------------------
 hoij2_replicates <- function(theta0, C_mat, dW, H.inv, J_all, T_arr,
                              kappa = 0.5) {

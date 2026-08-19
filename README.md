@@ -62,7 +62,12 @@ with the development version; see `00_install_dependencies.R`.
 
 **Trust-region damping.** The replication loops shrink the second-order
 step so that its norm is at most `kappa` times the norm of the
-first-order step (default `kappa = 0.5`). This is a numerical safeguard
-for the occasional weight vector where the quadratic term dominates the
-linear one; `kappa = Inf` reproduces Eq. (8) unmodified. The fraction of
-damped replicates is reported as a diagnostic.
+first-order step (default `kappa = 0.5`); `kappa = Inf` reproduces
+Eq. (8) unmodified. The correction is one order smaller than the step it
+corrects only on average, and in the upper tail of the weight
+distribution it can exceed it. With `kappa = 0.5` the bound is active for
+a sizeable minority of weight vectors -- roughly 20% at N = 300 and 40%
+at N = 100 for the mediation model -- so it is part of the estimator and
+not a rare repair. The damped fraction is reported as a diagnostic and
+should be compared against a `kappa = Inf` run when the difference could
+matter.
