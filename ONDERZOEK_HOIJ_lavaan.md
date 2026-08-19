@@ -32,7 +32,7 @@ Eenmalige setup per gefit model (θ̂ = `coef(fit)`, D parameters, N cases):
    `information.observed = Σᵢ Jᵢ / N`).
 4. **Derde-orde tensor** `T` (D×D×D): `compute_T_tensor_grad()` op lavaan's
    analytische gradiënt van F, teruggeschaald naar loglik-schaal via
-   `calibrate_alpha()` (zelftest (c)/(d)).
+   `check_gradient_hessian()` (zelftest (c)/(d)); een schaalfactor is niet nodig.
 5. **Gewichten**: B multinomiale countvectoren `W` (B×N),
    `Δw = W − 1` — *dezelfde* gewichten als een exacte bootstrap zou
    gebruiken, zodat HOIJ−bootstrap-verschillen pure approximatiefout zijn.
@@ -53,7 +53,7 @@ CI = percentielinterval**. HOIJ-replicaten kunnen per constructie niet
 (1 fit + goedkope algebra i.p.v. B herfits).
 
 Diagnostiek die de studie meeneemt en die een implementatie moet behouden:
-α-`spread` (kalibratieconsistentie, tolerantie 0.1), dempingsfractie/mean s,
+`spread` van de gradiënt-Hessiaancheck (tolerantie 0.1), dempingsfractie/mean s,
 fractie niet-toelaatbare replicaten (negatieve varianties), en een
 sensitiviteitsvariant die niet-toelaatbare replicaten schrapt.
 
@@ -107,7 +107,7 @@ zodat gebruikers geen R-functies hoeven te schrijven (intern vertalen naar
 Ontwerpkeuzes die uit de studie meegenomen moeten worden:
 - **Gedeelde/reproduceerbare gewichten** (seed-argument; optie om `W` te
   exporteren zodat een gebruiker HOIJ tegen een echte bootstrap kan leggen).
-- **Geen stille fallbacks**: NA + reden (fallb_Hobs / fallb_alpha / fallb_deriv)
+- **Geen stille fallbacks**: NA + reden (fallb_Hobs / fallb_spread / fallb_deriv)
   in plaats van geruisloos degraderen naar IJ1.
 - **Vectorisatie van de B-lus** zoals in het script (C = ΔW·S·H⁻¹ als één
   matrixproduct; J-contractie via `ΔW %*% J_2d`), zodat de kosten na de setup

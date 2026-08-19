@@ -139,12 +139,12 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
   })["elapsed"]
 
   grad_F <- make_grad_F(fit)
-  t_cal <- system.time({
-    cal <- calibrate_alpha(grad_F, theta0, H_obs)
+  t_chk <- system.time({
+    chk <- check_gradient_hessian(grad_F, theta0, H_obs)
   })["elapsed"]
-  if (!is.finite(cal$alpha) || cal$spread > 0.1)
-    stop(sprintf("[%s] alpha calibration failed (spread = %.3g)",
-                 label, cal$spread))
+  if (!is.finite(chk$spread) || chk$spread > 0.1)
+    stop(sprintf("[%s] derivative check failed (spread = %.3g)",
+                 label, chk$spread))
 
   t_J <- system.time({
     J_all <- compute_all_J(fit, theta0)
@@ -152,12 +152,12 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
 
   ## compute_T_tensor_grad() uses exactly 2 * D^2 gradient evaluations
   t_T <- system.time({
-    T_arr <- compute_T_tensor_grad(grad_F, theta0, cal$alpha)
+    T_arr <- compute_T_tensor_grad(grad_F, theta0)
   })["elapsed"]
 
-  ## The scale calibration is a fixed cost of obtaining Jhat^-1 on the
-  ## log-likelihood scale, so it is reported with the scores block.
-  t_scores_hinv <- as.numeric(t_scores + t_cal)
+  ## The derivative check is a fixed cost of setting up the gradient
+  ## route, so it is reported with the scores block.
+  t_scores_hinv <- as.numeric(t_scores + t_chk)
   t_setup <- t_scores_hinv + as.numeric(t_J) + as.numeric(t_T)
   cat(sprintf("setup: scores+Jhat^-1 = %.4f s | J_i = %.4f s | Khat = %.4f s | total = %.4f s\n",
               t_scores_hinv, as.numeric(t_J), as.numeric(t_T), t_setup))

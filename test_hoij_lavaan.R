@@ -27,6 +27,10 @@ stopifnot(lavInspect(fit, "converged"))
 
 functionals <- c(ab = "a*b", psi_speed = "`speed~~speed`")
 
+## the kernel's scaling conventions, including the one that makes a
+## separate scale factor for the third derivatives unnecessary
+stopifnot(hoij_selftest())
+
 
 ## --- (1) basic run ---------------------------------------------------
 cat("-- (1) basic run --\n")
@@ -117,6 +121,11 @@ expect_error(hoij_lavaan(sem("f =~ x1 + x2 + x3",
 expect_error(hoij_lavaan(sem("f =~ x1 + a*x2 + a*x3",
                              data = HolzingerSwineford1939)),
              "equality constraints")
+## likelihood = "wishart" rescales lavaan's objective away from the mean
+## log-likelihood, so the third derivatives would be on the wrong scale
+expect_error(hoij_lavaan(sem("f =~ x1 + x2 + x3",
+                             data = HolzingerSwineford1939,
+                             likelihood = "wishart")), "likelihood")
 
 
 ## --- (4) development-lavaan compatibility -----------------------------

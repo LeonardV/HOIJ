@@ -68,10 +68,10 @@ B <- if (SMOKE_TEST) 100L else 1000L   # shared weight vectors per data set
 R_MC  <- B                             # Monte Carlo draws, parity with B
 ALPHA <- 0.05                          # nominal 95% intervals
 
-KAPPA_DAMP       <- 0.5   # trust region on the second-order step
-ALPHA_SPREAD_TOL <- 0.1   # tolerance on the scale calibration
-MAX_REDRAW       <- 50L   # cap on redraws per data-set slot
-INCLUDE_BCA      <- TRUE  # BCa sensitivity check; not reported
+KAPPA_DAMP  <- 0.5        # trust region on the second-order step
+SPREAD_TOL  <- 0.1        # tolerance on the gradient-Hessian check
+MAX_REDRAW  <- 50L        # cap on redraws per data-set slot
+INCLUDE_BCA <- TRUE       # BCa sensitivity check; not reported
 
 MAIN_FNS      <- c("ab", "psi_speed")
 SECONDARY_FNS <- c("r2_speed", "omega_speed")
@@ -481,8 +481,8 @@ run_dataset <- function(cell_row, s) {
                                   converged = FALSE, inadmissible_primary = NA,
                                   boot_fail = NA_real_, boot_inadmiss = NA_real_,
                                   hoij_ok = FALSE, fallb_Hobs = 0L,
-                                  fallb_alpha = 0L, fallb_deriv = 0L,
-                                  alpha_spread = NA_real_, frac_damped = NA_real_,
+                                  fallb_spread = 0L, fallb_deriv = 0L,
+                                  grad_spread = NA_real_, frac_damped = NA_real_,
                                   mean_s = NA_real_, hoij_frac_inadmiss = NA_real_)))
   t_fit <- elapsed_sec(t0)
 
@@ -580,8 +580,8 @@ run_dataset <- function(cell_row, s) {
 
   ## --- HOIJ-2, Eq. (8): derivative setup and replication loop -------
   hoij_th <- NULL; hoij_inadmiss <- NULL
-  fallb_Hobs <- 0L; fallb_alpha <- 0L; fallb_deriv <- 0L
-  alpha_spread <- NA_real_; frac_damped <- NA_real_; mean_s <- NA_real_
+  fallb_Hobs <- 0L; fallb_spread <- 0L; fallb_deriv <- 0L
+  grad_spread <- NA_real_; frac_damped <- NA_real_; mean_s <- NA_real_
   t_hsetup <- 0; t_hloop <- 0
   if (!is.null(C_mat)) {
     t0 <- proc.time()[["elapsed"]]
@@ -591,16 +591,16 @@ run_dataset <- function(cell_row, s) {
       fallb_Hobs <- 1L
     } else {
       grad_F <- make_grad_F(fit_k)
-      cal <- tryCatch(calibrate_alpha(grad_F, theta0, H_obs),
+      chk <- tryCatch(check_gradient_hessian(grad_F, theta0, H_obs),
                       error = function(e) NULL)
-      if (!is.null(cal) && is.finite(cal$spread)) alpha_spread <- cal$spread
+      if (!is.null(chk) && is.finite(chk$spread)) grad_spread <- chk$spread
       ## No silent fallback: if the second-order step cannot be computed
       ## reliably, hoij2 is recorded as NA and the reason is counted.
-      if (is.null(cal) || !is.finite(cal$alpha) ||
-          cal$spread > ALPHA_SPREAD_TOL) {
-        fallb_alpha <- 1L
+      if (is.null(chk) || !is.finite(chk$spread) ||
+          chk$spread > SPREAD_TOL) {
+        fallb_spread <- 1L
       } else {
-        T_arr <- tryCatch(compute_T_tensor_grad(grad_F, theta0, cal$alpha),
+        T_arr <- tryCatch(compute_T_tensor_grad(grad_F, theta0),
                           error = function(e) NULL)
         J_all <- tryCatch(compute_all_J(fit_k, theta0), error = function(e) NULL)
         if (is.null(T_arr) || is.null(J_all)) {
@@ -703,8 +703,8 @@ run_dataset <- function(cell_row, s) {
                          boot_fail = n_boot_fail / B,
                          boot_inadmiss = n_boot_inadmiss / B,
                          hoij_ok = !is.null(hoij_th), fallb_Hobs = fallb_Hobs,
-                         fallb_alpha = fallb_alpha, fallb_deriv = fallb_deriv,
-                         alpha_spread = alpha_spread, frac_damped = frac_damped,
+                         fallb_spread = fallb_spread, fallb_deriv = fallb_deriv,
+                         grad_spread = grad_spread, frac_damped = frac_damped,
                          mean_s = mean_s,
                          hoij_frac_inadmiss = if (is.null(hoij_inadmiss))
                            NA_real_ else mean(hoij_inadmiss)))
@@ -744,7 +744,7 @@ clusterExport(cl, c("design", "tasks", "run_dataset", "pop_syntax",
                     "pseudo_truth", "model_analysis", "fn_names",
                     "functionals_scalar", "functionals_vec", "methods_all",
                     "S", "B", "R_MC", "ALPHA", "KAPPA_DAMP",
-                    "ALPHA_SPREAD_TOL", "MAX_REDRAW", "INCLUDE_BCA",
+                    "SPREAD_TOL", "MAX_REDRAW", "INCLUDE_BCA",
                     "SEED_BASE", "make_boot_partable", "fit_boot_cov",
                     "simulate_vita_data", "elapsed_sec", "moment_diag",
                     "var_speed_scalar", "var_speed_vec", "bca_ci"))

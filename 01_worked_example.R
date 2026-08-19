@@ -205,12 +205,12 @@ H_obs  <- lavTech(fit, "information.observed")            # Jhat
 dimnames(H.inv) <- list(th_names, th_names)
 
 grad_F <- make_grad_F(fit)
-cal <- calibrate_alpha(grad_F, theta0, H_obs)
-if (!is.finite(cal$alpha) || cal$spread > 0.1)
-  stop(sprintf("alpha calibration failed (spread = %.3g)", cal$spread))
+chk <- check_gradient_hessian(grad_F, theta0, H_obs)
+if (!is.finite(chk$spread) || chk$spread > 0.1)
+  stop(sprintf("derivative check failed (spread = %.3g)", chk$spread))
 
-J_all <- compute_all_J(fit, theta0)                       # N x D x D
-T_arr <- compute_T_tensor_grad(grad_F, theta0, cal$alpha) # D x D x D
+J_all <- compute_all_J(fit, theta0)                # N x D x D
+T_arr <- compute_T_tensor_grad(grad_F, theta0)     # D x D x D, equals -Khat
 
 
 # ---------------------------------------------------------------------

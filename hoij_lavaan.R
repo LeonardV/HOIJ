@@ -22,8 +22,9 @@
 # those values.
 #
 # Scope (enforced by .hoij_check_fit):
-#   single group, complete data, estimator ML, continuous indicators,
-#   no equality constraints, no multilevel or sampling weights
+#   single group, complete data, normal-theory ML, continuous
+#   indicators, no equality constraints, no multilevel or sampling
+#   weights
 #
 # Usage:
 #   source("hoij_core.R"); source("hoij_lavaan.R")
@@ -58,6 +59,12 @@ if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
   if (isTRUE(lavaan::lavInspect(fit, "categorical")))
     stop("hoij_lavaan() does not support categorical indicators.",
          call. = FALSE)
+  ## The derivatives are read off the function lavaan optimises, which
+  ## coincides with the mean log-likelihood only under the normal
+  ## likelihood; likelihood = "wishart" rescales it by roughly N/(N-1).
+  if (!is.null(opt$likelihood) && !opt$likelihood %in% "normal")
+    stop("hoij_lavaan() requires likelihood = \"normal\" (found: ",
+         opt$likelihood, ").", call. = FALSE)
   if (fit@Model@eq.constraints ||
       (!is.null(fit@Model@ceq.function) &&
        !identical(body(fit@Model@ceq.function), quote(NULL)) &&
@@ -132,7 +139,7 @@ if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
 # @param admissibility "keep" (default: all replicates count) or "drop"
 #                    (replicates with a negative variance parameter are
 #                    removed before the SE and interval are computed)
-# @param alpha_spread_tol tolerance on the scale calibration
+# @param spread_tol  tolerance on the gradient-Hessian check
 # @param seed        optional seed for the weight draws
 # @param details     TRUE: also return the replicates and the weight matrix
 # @return object of class "hoij_lavaan" with $results (est, se, lo, hi),
@@ -141,8 +148,7 @@ if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
 hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
                         kappa = 0.5, level = 0.95,
                         admissibility = c("keep", "drop"),
-                        alpha_spread_tol = 0.1, seed = NULL,
-                        details = FALSE) {
+                        spread_tol = 0.1, seed = NULL, details = FALSE) {
 
   admissibility <- match.arg(admissibility)
   stopifnot(order %in% c(1L, 2L), B >= 40L, level > 0, level < 1, kappa > 0)
@@ -177,19 +183,20 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
     stop("Scores or observed information are not available for this model.",
          call. = FALSE)
 
-  alpha <- NA_real_; alpha_spread <- NA_real_; J_all <- NULL; T_arr <- NULL
+  grad_spread <- NA_real_; J_all <- NULL; T_arr <- NULL
   if (order == 2L) {
     H_obs  <- lavaan::lavTech(fit, "information.observed")
     grad_F <- make_grad_F(fit)
-    cal <- calibrate_alpha(grad_F, theta0, H_obs)
-    alpha <- cal$alpha; alpha_spread <- cal$spread
-    if (!is.finite(alpha) || cal$spread > alpha_spread_tol)
-      stop(sprintf(paste0("Scale calibration is inconsistent (spread = %.3g ",
-                          "> %.3g): the second-order step cannot be computed ",
+    chk <- check_gradient_hessian(grad_F, theta0, H_obs)
+    grad_spread <- chk$spread
+    if (!is.finite(chk$spread) || chk$spread > spread_tol)
+      stop(sprintf(paste0("The finite-difference route does not reproduce ",
+                          "lavaan's observed information (spread = %.3g > ",
+                          "%.3g): the second-order step cannot be computed ",
                           "reliably for this model. Use order = 1 (IJ1) or a ",
-                          "bootstrap."), cal$spread, alpha_spread_tol),
+                          "bootstrap."), chk$spread, spread_tol),
            call. = FALSE)
-    T_arr <- compute_T_tensor_grad(grad_F, theta0, alpha)
+    T_arr <- compute_T_tensor_grad(grad_F, theta0)
     J_all <- compute_all_J(fit, theta0)
   }
   t_setup <- proc.time()[["elapsed"]] - t0
@@ -239,8 +246,7 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
     results = res,
     diagnostics = list(
       order = order, B = B, kappa = kappa, level = level,
-      admissibility = admissibility, alpha = alpha,
-      alpha_spread = alpha_spread,
+      admissibility = admissibility, grad_spread = grad_spread,
       frac_damped = if (order == 2L) mean(s_vec < 1) else NA_real_,
       mean_s = if (order == 2L) mean(s_vec) else NA_real_,
       frac_inadmissible = mean(inadmiss),
@@ -264,8 +270,8 @@ print.hoij_lavaan <- function(x, digits = 3, ...) {
   cat(sprintf("setup %.2fs + replicates %.2fs\n",
               d$time_setup_s, d$time_replicates_s))
   if (d$order == 2L)
-    cat(sprintf("alpha = %.2f (spread %.1e) | damped %.1f%% (mean s = %.2f)\n",
-                d$alpha, d$alpha_spread, 100 * d$frac_damped, d$mean_s))
+    cat(sprintf("derivative check %.1e | damped %.1f%% (mean s = %.2f)\n",
+                d$grad_spread, 100 * d$frac_damped, d$mean_s))
   if (d$frac_inadmissible > 0)
     cat(sprintf("inadmissible replicates: %.1f%% (%s)\n",
                 100 * d$frac_inadmissible,

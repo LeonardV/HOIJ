@@ -20,9 +20,10 @@
 #   lavScores(fit, scaling = TRUE)         = -s_i(theta-hat) / N
 #   lavTech(fit, "information.observed")   = sum_i J_i(theta-hat) / N = Jhat
 #   compute_T_tensor_grad()                = -Khat
-#     (it differentiates lavaan's fit function F, which is a decreasing
-#      function of the log-likelihood, hence the sign flip; the sign is
-#      absorbed in hoij2_replicates() below)
+#     (it differentiates the function lavaan optimises, which for
+#      normal-theory ML is the negative mean log-likelihood up to a
+#      constant, hence the sign flip; the sign is absorbed in
+#      hoij2_replicates() below)
 # =====================================================================
 
 
@@ -154,16 +155,23 @@ make_grad_F <- function(fit) {
 
 
 # ---------------------------------------------------------------------
-# Scale factor between lavaan's fit function and the log-likelihood
+# Consistency check on the finite-difference route
 #
-# The third derivatives below are taken of F, the log-likelihood
-# derivatives of the article are on a different scale. alpha is the
-# constant that maps one onto the other; it is identified by comparing
-# the numerical Hessian of F with lavaan's observed information. A large
-# `spread` means the two are not proportional and the second-order step
-# should not be trusted.
+# The third derivatives below are second differences of lavaan's analytic
+# gradient. No rescaling is applied: for normal-theory ML the function
+# lavaan optimises is the negative mean log-likelihood up to a constant,
+# which is what hoij_selftest() checks (b), so its derivatives are
+# already on the scale of Eq. (12). Earlier versions estimated a scale
+# factor here; it is identically one, because it compared two
+# derivatives of the same objective.
+#
+# What is worth checking is that the same finite differences reproduce
+# lavaan's analytic observed information. `spread` is the largest
+# element-wise relative deviation. It is small (1e-6 or less) when the
+# route works, and large when the step size is unusable or the gradient
+# does not respond to theta at all.
 # ---------------------------------------------------------------------
-calibrate_alpha <- function(grad_F, theta0, H_observed, h = 1e-5) {
+check_gradient_hessian <- function(grad_F, theta0, H_observed, h = 1e-5) {
   D <- length(theta0)
   H_grad <- matrix(NA_real_, D, D)
   for (k in seq_len(D)) {
@@ -173,23 +181,23 @@ calibrate_alpha <- function(grad_F, theta0, H_observed, h = 1e-5) {
   }
   H_grad <- (H_grad + t(H_grad)) / 2
 
-  idx   <- abs(H_grad) > 1e-6 * max(abs(H_grad))
+  idx <- abs(H_grad) > 1e-6 * max(abs(H_grad))
   ratio <- as.numeric(H_observed)[idx] / as.numeric(H_grad)[idx]
-  alpha <- median(ratio)
 
-  list(alpha = alpha, spread = max(abs(ratio / alpha - 1)))
+  list(spread = max(abs(ratio / median(ratio) - 1)),
+       ratio = median(ratio))
 }
 
 
 # ---------------------------------------------------------------------
 # Third-derivative array, Eq. (12)
 #
-# Central second differences of the analytic gradient, rescaled by alpha
-# and symmetrised over all index permutations. Returns a D x D x D array
-# equal to -Khat. For large D the contraction can be evaluated by
-# directional differentiation instead of storing the full array.
+# Central second differences of the analytic gradient, symmetrised over
+# all index permutations. Returns a D x D x D array equal to -Khat. For
+# large D the contraction can be evaluated by directional
+# differentiation instead of storing the full array.
 # ---------------------------------------------------------------------
-compute_T_tensor_grad <- function(grad_F, theta, alpha, h = 1e-4) {
+compute_T_tensor_grad <- function(grad_F, theta, h = 1e-4) {
   D <- length(theta)
   T_arr <- array(0, dim = c(D, D, D))
   g0 <- grad_F(theta)
@@ -208,8 +216,8 @@ compute_T_tensor_grad <- function(grad_F, theta, alpha, h = 1e-4) {
         col <- (grad_F(t_pp) - grad_F(t_pm) -
                 grad_F(t_mp) + grad_F(t_mm)) / (4 * h^2)
       }
-      T_arr[, l, m] <- alpha * col
-      T_arr[, m, l] <- alpha * col
+      T_arr[, l, m] <- col
+      T_arr[, m, l] <- col
     }
   }
 
@@ -366,18 +374,20 @@ hoij_selftest <- function(tol_rel = 0.01, verbose = TRUE) {
   say("  (b) observed info      : N * ratio = %+.6f (expect +1)  %s\n",
       r_H, if (ok_b) "OK" else "FAIL")
 
-  ## (c) fit function and log-likelihood are proportional
+  ## (c) the finite differences reproduce lavaan's observed information
   grad_F <- make_grad_F(fit)
-  cal <- tryCatch(calibrate_alpha(grad_F, th0, H_obs), error = function(e) NULL)
-  ok_c <- !is.null(cal) && is.finite(cal$spread) && cal$spread < 0.01
-  say("  (c) alpha calibration  : alpha = %.4f, spread = %.2e  %s\n",
-      if (is.null(cal)) NA else cal$alpha,
-      if (is.null(cal)) NA else cal$spread, if (ok_c) "OK" else "FAIL")
+  chk <- tryCatch(check_gradient_hessian(grad_F, th0, H_obs),
+                  error = function(e) NULL)
+  ok_c <- !is.null(chk) && is.finite(chk$spread) && chk$spread < 0.01 &&
+    abs(chk$ratio - 1) < tol_rel
+  say("  (c) gradient Hessian   : ratio = %+.6f, spread = %.2e  %s\n",
+      if (is.null(chk)) NA else chk$ratio,
+      if (is.null(chk)) NA else chk$spread, if (ok_c) "OK" else "FAIL")
 
   ## (d) T array against a direct third derivative of -mean log-likelihood
   ok_d <- FALSE
   if (ok_c) {
-    T_arr <- compute_T_tensor_grad(grad_F, th0, cal$alpha)
+    T_arr <- compute_T_tensor_grad(grad_F, th0)
     f_tot <- function(th) -sum(compute_loglik_casewise(fit, th)) / N
     hh <- 1e-3
     k <- which.max(abs(T_arr[cbind(1:D, 1:D, 1:D)]))
@@ -389,7 +399,7 @@ hoij_selftest <- function(tol_rel = 0.01, verbose = TRUE) {
     say("  (d) third derivatives  : ratio = %+.6f (expect +1)   %s\n",
         r_T, if (ok_d) "OK" else "FAIL")
   } else {
-    say("  (d) third derivatives  : skipped (alpha calibration failed)\n")
+    say("  (d) third derivatives  : skipped (check (c) failed)\n")
   }
 
   ## (e) expected-information vcov used by the Wald-delta (Inf) comparator
