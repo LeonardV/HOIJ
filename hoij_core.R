@@ -249,22 +249,11 @@ ij1_replicates <- function(theta0, Scores, H.inv, dW) {
 # With d1 = -C the first-order step, the two second-order terms are
 #   Bc = Jhat^-1 J_delta C   = -Jhat^-1 J_delta d1
 #   Ac = 1/2 Jhat^-1 T(C, C) = -1/2 Jhat^-1 Khat(d1, d1)
-# so that theta-hat + d1 + (Bc - Ac) is exactly Eq. (8).
-#
-# kappa applies a trust region: the second-order step is shrunk so that
-# its norm is at most kappa * ||d1||. The correction is one order smaller
-# than the step it corrects (O_p(N^-1) against O_p(N^-1/2)), but only on
-# average: in the upper tail of the weight distribution it can exceed the
-# linear step, which is where the quadratic model stops being credible
-# and the replicate can leave the admissible parameter space. With the
-# default kappa = 0.5 the bound is active for a sizeable minority of
-# weight vectors (roughly 20% at N = 300 and 40% at N = 100 for the
-# mediation model), so it is part of the estimator rather than a rare
-# repair: report the damped fraction, and compare against kappa = Inf,
-# which reproduces Eq. (8) unmodified.
+# so that theta-hat + d1 + (Bc - Ac) is exactly Eq. (8). No damping or
+# trust region is applied: the replicate is the second-order Taylor
+# expansion as written.
 # ---------------------------------------------------------------------
-hoij2_replicates <- function(theta0, C_mat, dW, H.inv, J_all, T_arr,
-                             kappa = 0.5) {
+hoij2_replicates <- function(theta0, C_mat, dW, H.inv, J_all, T_arr) {
   D <- length(theta0); B <- nrow(C_mat); N <- dim(J_all)[1]
 
   Tmat  <- matrix(T_arr, nrow = D)                         # D x D^2
@@ -273,8 +262,6 @@ hoij2_replicates <- function(theta0, C_mat, dW, H.inv, J_all, T_arr,
   HT    <- H.inv %*% Tmat
 
   theta_rep <- matrix(NA_real_, B, D, dimnames = list(NULL, names(theta0)))
-  s_vec <- rep(NA_real_, B)
-
   for (i in seq_len(B)) {
     c_vec  <- C_mat[i, ]
     J_dw_i <- matrix(JW_2d[i, ], D, D)
@@ -282,17 +269,9 @@ hoij2_replicates <- function(theta0, C_mat, dW, H.inv, J_all, T_arr,
     Bc <- drop(H.inv %*% J_dw_i %*% c_vec)
     Ac <- 0.5 * drop(HT %*% as.vector(tcrossprod(c_vec)))
 
-    d1 <- -c_vec
-    d2 <- Bc - Ac
-
-    n1 <- sqrt(sum(d1^2)); n2 <- sqrt(sum(d2^2))
-    s  <- if (n2 > 0) min(1, kappa * n1 / n2) else 1
-
-    s_vec[i] <- s
-    theta_rep[i, ] <- theta0 + d1 + s * d2
+    theta_rep[i, ] <- theta0 - c_vec + (Bc - Ac)
   }
-
-  list(theta = theta_rep, s = s_vec)
+  theta_rep
 }
 
 
