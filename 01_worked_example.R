@@ -32,7 +32,6 @@ SEED_MC      <- 20260708
 N_EX     <- 500      # sample size of the single example data set
 B        <- 5000     # weight vectors shared by IJ1, HOIJ-2 and bootstrap
 R_MC     <- 5000     # Monte Carlo draws
-KAPPA    <- 0.5      # trust-region damping of the second-order step
 ALPHA_CI <- 0.05     # nominal 95% intervals
 
 ## Weak-effect population: only the two mediation paths are overridden,
@@ -234,11 +233,8 @@ valid <- complete.cases(boot_th)
 cat(sprintf("  %d converged, %d failed (%.2f%%)\n",
             sum(valid), sum(!valid), 100 * mean(!valid)))
 
-ij1   <- ij1_replicates(theta0, Scores, H.inv, dW)               # Eq. (7)
-hoij2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr,
-                          kappa = KAPPA)                          # Eq. (8)
-cat(sprintf("HOIJ-2 damping: fraction s < 1 = %.3f, mean s = %.3f\n",
-            mean(hoij2$s < 1), mean(hoij2$s)))
+ij1   <- ij1_replicates(theta0, Scores, H.inv, dW)              # Eq. (7)
+hoij2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr)  # Eq. (8)
 
 set.seed(SEED_MC)
 L_mc  <- t(chol(V_hw + diag(1e-10, D)))
@@ -250,7 +246,7 @@ colnames(mc_th) <- th_names
 ## based on the same weights.
 replicates <- list(mc_hw = mc_th,
                    ij1   = ij1$theta[valid, , drop = FALSE],
-                   hoij2 = hoij2$theta[valid, , drop = FALSE],
+                   hoij2 = hoij2[valid, , drop = FALSE],
                    boot  = boot_th[valid, , drop = FALSE])
 
 
@@ -388,9 +384,9 @@ write.csv(tab_intervals,
 saveRDS(list(seeds = c(data = SEED_DATA, weights = SEED_WEIGHTS,
                        mc = SEED_MC),
              effect_pars = EFFECT_PARS, N = N, B = B, R_MC = R_MC, D = D,
-             kappa = KAPPA, theta0 = theta0, fn_hat = fn_hat,
+             theta0 = theta0, fn_hat = fn_hat,
              valid = valid, replicates = replicates, W_counts = W_counts,
-             damping_s = hoij2$s, V_inf = V_inf, V_hw = V_hw,
+             V_inf = V_inf, V_hw = V_hw,
              tab_intervals = tab_intervals, tab_pairwise = tab_pairwise,
              sessionInfo = sessionInfo()),
         file.path(out_dir, sprintf("worked_example_%s.rds", stamp)))

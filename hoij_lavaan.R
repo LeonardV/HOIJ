@@ -14,9 +14,8 @@
 # For each multinomial weight vector w (as a bootstrap resample would
 # produce), with C = (w - 1)' S Jhat^-1 (see hoij_core.R),
 #   IJ1    : theta(w) ~ theta-hat - C                         Eq. (7)
-#   HOIJ-2 : theta(w) ~ theta-hat - C + s * d2                Eq. (8)
+#   HOIJ-2 : theta(w) ~ theta-hat - C + d2                    Eq. (8)
 #            d2 = Jhat^-1 J_delta C - 1/2 Jhat^-1 T(C, C)
-#            s  = min(1, kappa * ||C|| / ||d2||)
 # The functional is evaluated on each replicate; the standard error is
 # the standard deviation and the interval the percentile interval of
 # those values.
@@ -129,12 +128,6 @@ if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
 # @param functional  NULL, character expression(s), function(s), or a list
 # @param B           number of multinomial weight vectors
 # @param order       1 = IJ1 (linear), 2 = HOIJ-2 (default)
-# @param kappa       trust-region damping of the second-order step: its
-#                    norm is capped at kappa times the norm of the
-#                    first-order step. The bound is active for a
-#                    sizeable minority of weight vectors, so report
-#                    diagnostics$frac_damped; kappa = Inf gives Eq. (8)
-#                    unmodified
 # @param level       confidence level of the percentile interval
 # @param admissibility "keep" (default: all replicates count) or "drop"
 #                    (replicates with a negative variance parameter are
@@ -146,12 +139,11 @@ if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
 #         $diagnostics and optionally $replicates / $weights
 # ---------------------------------------------------------------------
 hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
-                        kappa = 0.5, level = 0.95,
-                        admissibility = c("keep", "drop"),
+                        level = 0.95, admissibility = c("keep", "drop"),
                         spread_tol = 0.1, seed = NULL, details = FALSE) {
 
   admissibility <- match.arg(admissibility)
-  stopifnot(order %in% c(1L, 2L), B >= 40L, level > 0, level < 1, kappa > 0)
+  stopifnot(order %in% c(1L, 2L), B >= 40L, level > 0, level < 1)
   .hoij_check_fit(fit)
   if (!is.null(seed)) set.seed(seed)
 
@@ -207,13 +199,8 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
   dW <- W - 1L
 
   ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
-  if (order == 2L) {
-    h2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr,
-                           kappa = kappa)
-    theta_rep <- h2$theta; s_vec <- h2$s
-  } else {
-    theta_rep <- ij1$theta; s_vec <- rep(1, B)
-  }
+  theta_rep <- if (order == 2L)
+    hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr) else ij1$theta
   inadmiss <- if (length(var_idx))
     apply(theta_rep[, var_idx, drop = FALSE] < 0, 1, any) else rep(FALSE, B)
   t_rep <- proc.time()[["elapsed"]] - t0
@@ -245,10 +232,8 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
   out <- list(
     results = res,
     diagnostics = list(
-      order = order, B = B, kappa = kappa, level = level,
+      order = order, B = B, level = level,
       admissibility = admissibility, grad_spread = grad_spread,
-      frac_damped = if (order == 2L) mean(s_vec < 1) else NA_real_,
-      mean_s = if (order == 2L) mean(s_vec) else NA_real_,
       frac_inadmissible = mean(inadmiss),
       time_setup_s = t_setup, time_replicates_s = t_rep, N = N, D = D),
     call = match.call())
@@ -270,8 +255,7 @@ print.hoij_lavaan <- function(x, digits = 3, ...) {
   cat(sprintf("setup %.2fs + replicates %.2fs\n",
               d$time_setup_s, d$time_replicates_s))
   if (d$order == 2L)
-    cat(sprintf("derivative check %.1e | damped %.1f%% (mean s = %.2f)\n",
-                d$grad_spread, 100 * d$frac_damped, d$mean_s))
+    cat(sprintf("derivative check %.1e\n", d$grad_spread))
   if (d$frac_inadmissible > 0)
     cat(sprintf("inadmissible replicates: %.1f%% (%s)\n",
                 100 * d$frac_inadmissible,

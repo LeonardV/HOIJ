@@ -32,7 +32,6 @@ N_EX         <- 500     # sample size of the example data set
 N_TIMING     <- 200     # replicates used for the per-replicate timings
 N_FIT_TIMING <- 30      # repeated fits for a stable single-fit timing
 B_TARGETS    <- c(1000, 5000)
-KAPPA        <- 0.5     # trust-region damping, as in the other scripts
 SEED_MED     <- 20260706
 SEED_BIF     <- 20260810
 
@@ -169,7 +168,7 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
 
   t_loop <- system.time({
     ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
-    hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr, kappa = KAPPA)
+    hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr)
   })["elapsed"]
   t_rep_approx <- as.numeric(t_loop) / N_TIMING
   cat(sprintf("approximate bootstrap: %.6f s per replicate (n = %d)\n",
@@ -301,7 +300,6 @@ write.csv(tab_timing, file.path(out_dir, sprintf("tab_timing_%s.csv", stamp)),
           row.names = FALSE)
 saveRDS(list(mediation = res_med, bifactor = res_bif, N = N_EX,
              N_TIMING = N_TIMING, N_FIT_TIMING = N_FIT_TIMING,
-             B_TARGETS = B_TARGETS, kappa = KAPPA,
-             sessionInfo = sessionInfo()),
+             B_TARGETS = B_TARGETS, sessionInfo = sessionInfo()),
         file.path(out_dir, sprintf("timing_raw_%s.rds", stamp)))
 cat(sprintf("Done. Output in %s\n", out_dir))

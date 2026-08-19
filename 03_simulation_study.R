@@ -68,7 +68,6 @@ B <- if (SMOKE_TEST) 100L else 1000L   # shared weight vectors per data set
 R_MC  <- B                             # Monte Carlo draws, parity with B
 ALPHA <- 0.05                          # nominal 95% intervals
 
-KAPPA_DAMP  <- 0.5        # trust region on the second-order step
 SPREAD_TOL  <- 0.1        # tolerance on the gradient-Hessian check
 MAX_REDRAW  <- 50L        # cap on redraws per data-set slot
 INCLUDE_BCA <- TRUE       # BCa sensitivity check; not reported
@@ -482,8 +481,8 @@ run_dataset <- function(cell_row, s) {
                                   boot_fail = NA_real_, boot_inadmiss = NA_real_,
                                   hoij_ok = FALSE, fallb_Hobs = 0L,
                                   fallb_spread = 0L, fallb_deriv = 0L,
-                                  grad_spread = NA_real_, frac_damped = NA_real_,
-                                  mean_s = NA_real_, hoij_frac_inadmiss = NA_real_)))
+                                  grad_spread = NA_real_,
+                                  hoij_frac_inadmiss = NA_real_)))
   t_fit <- elapsed_sec(t0)
 
   ## An inadmissible but converged primary fit is kept: excluding it
@@ -581,7 +580,7 @@ run_dataset <- function(cell_row, s) {
   ## --- HOIJ-2, Eq. (8): derivative setup and replication loop -------
   hoij_th <- NULL; hoij_inadmiss <- NULL
   fallb_Hobs <- 0L; fallb_spread <- 0L; fallb_deriv <- 0L
-  grad_spread <- NA_real_; frac_damped <- NA_real_; mean_s <- NA_real_
+  grad_spread <- NA_real_
   t_hsetup <- 0; t_hloop <- 0
   if (!is.null(C_mat)) {
     t0 <- proc.time()[["elapsed"]]
@@ -608,11 +607,7 @@ run_dataset <- function(cell_row, s) {
         } else {
           t_hsetup <- elapsed_sec(t0)
           t0 <- proc.time()[["elapsed"]]
-          h2 <- hoij2_replicates(theta0, C_mat, dW, H.inv, J_all, T_arr,
-                                 kappa = KAPPA_DAMP)
-          hoij_th <- h2$theta
-          frac_damped <- mean(h2$s < 1, na.rm = TRUE)
-          mean_s      <- mean(h2$s, na.rm = TRUE)
+          hoij_th <- hoij2_replicates(theta0, C_mat, dW, H.inv, J_all, T_arr)
           hoij_inadmiss <- apply(hoij_th[, var_idx, drop = FALSE] < 0, 1, any)
           t_hloop <- elapsed_sec(t0)
         }
@@ -704,8 +699,7 @@ run_dataset <- function(cell_row, s) {
                          boot_inadmiss = n_boot_inadmiss / B,
                          hoij_ok = !is.null(hoij_th), fallb_Hobs = fallb_Hobs,
                          fallb_spread = fallb_spread, fallb_deriv = fallb_deriv,
-                         grad_spread = grad_spread, frac_damped = frac_damped,
-                         mean_s = mean_s,
+                         grad_spread = grad_spread,
                          hoij_frac_inadmiss = if (is.null(hoij_inadmiss))
                            NA_real_ else mean(hoij_inadmiss)))
 }
@@ -743,8 +737,8 @@ clusterExport(cl, c("design", "tasks", "run_dataset", "pop_syntax",
                     "Sigma_by_spec", "vita_by_spec", "ov_names",
                     "pseudo_truth", "model_analysis", "fn_names",
                     "functionals_scalar", "functionals_vec", "methods_all",
-                    "S", "B", "R_MC", "ALPHA", "KAPPA_DAMP",
-                    "SPREAD_TOL", "MAX_REDRAW", "INCLUDE_BCA",
+                    "S", "B", "R_MC", "ALPHA", "SPREAD_TOL",
+                    "MAX_REDRAW", "INCLUDE_BCA",
                     "SEED_BASE", "make_boot_partable", "fit_boot_cov",
                     "simulate_vita_data", "elapsed_sec", "moment_diag",
                     "var_speed_scalar", "var_speed_vec", "bca_ci"))
@@ -783,7 +777,7 @@ saveRDS(list(results = results, diags = diags, design = design,
              pseudo_truth = pseudo_truth, delta_star = delta_star,
              rmsea_achieved = rmsea_achieved,
              config = list(S = S, B = B, R_MC = R_MC, ALPHA = ALPHA,
-                           KAPPA_DAMP = KAPPA_DAMP, INCLUDE_BCA = INCLUDE_BCA,
+                           INCLUDE_BCA = INCLUDE_BCA,
                            N_TRUTH = N_TRUTH, VITA_NMAX = VITA_NMAX,
                            VITA_SDLOG = VITA_SDLOG, SEED_BASE = SEED_BASE,
                            SMOKE_TEST = SMOKE_TEST),
@@ -816,8 +810,7 @@ cat(sprintf("\nMonte Carlo error on coverage at full validity (S = %d): +/- %.2f
             S, 100 * mcse_ref))
 
 fail_tab <- aggregate(cbind(n_redraw, inadmissible_primary, boot_fail,
-                            boot_inadmiss, frac_damped, mean_s,
-                            hoij_frac_inadmiss) ~ N + dist + spec,
+                            boot_inadmiss, hoij_frac_inadmiss) ~ N + dist + spec,
                       data = diags, FUN = function(x) mean(x, na.rm = TRUE))
 cat("\nFailure and HOIJ diagnostics per cell (means):\n")
 print(fail_tab, row.names = FALSE, digits = 3)

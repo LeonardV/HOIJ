@@ -68,14 +68,11 @@ which self-test (b) verifies. `hoij_lavaan()` therefore refuses
 N/(N-1). `check_gradient_hessian()` confirms that the finite differences
 reproduce lavaan's analytic observed information before they are used.
 
-**Trust-region damping.** The replication loops shrink the second-order
-step so that its norm is at most `kappa` times the norm of the
-first-order step (default `kappa = 0.5`); `kappa = Inf` reproduces
-Eq. (8) unmodified. The correction is one order smaller than the step it
-corrects only on average, and in the upper tail of the weight
-distribution it can exceed it. With `kappa = 0.5` the bound is active for
-a sizeable minority of weight vectors -- roughly 20% at N = 300 and 40%
-at N = 100 for the mediation model -- so it is part of the estimator and
-not a rare repair. The damped fraction is reported as a diagnostic and
-should be compared against a `kappa = Inf` run when the difference could
-matter.
+**No damping.** The second-order replicate is Eq. (8) as written. An
+earlier version of this code shrank the second-order step whenever it
+exceeded half the length of the first-order step. That device is not
+part of the method: it is absent from the article and from the reference
+implementation of Giordano et al., and on 40 simulated data sets it made
+no systematic difference -- at N = 500 the bound never engaged at all,
+and at N = 100 the damped and undamped intervals were equally close to
+the exact bootstrap. It has therefore been removed.
