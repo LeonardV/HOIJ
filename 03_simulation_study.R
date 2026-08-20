@@ -480,7 +480,8 @@ run_dataset <- function(cell_row, s) {
                                   hoij_ok = FALSE, fallb_Hobs = 0L,
                                   fallb_spread = 0L, fallb_deriv = 0L,
                                   grad_spread = NA_real_,
-                                  hoij_frac_inadmiss = NA_real_)))
+                                  hoij_frac_inadmiss = NA_real_,
+                                  error = NA_character_)))
   t_fit <- elapsed_sec(t0)
 
   ## An inadmissible but converged primary fit is kept: excluding it
@@ -500,21 +501,22 @@ run_dataset <- function(cell_row, s) {
 
   V_hw  <- tryCatch(lavInspect(fit_k, "vcov")[th_names, th_names, drop = FALSE],
                     error = function(e) NULL)
-  V_inf <- tryCatch(lavTech(fit_k, "inverted.information.expected") / N_sim,
-                    error = function(e) NULL)
+  V_expected <- tryCatch(
+    lavTech(fit_k, "inverted.information.expected") / N_sim,
+    error = function(e) NULL)
 
-  ## --- Wald-delta intervals -----------------------------------------
+  ## --- Wald intervals ------------------------------------------------
   t0 <- proc.time()[["elapsed"]]
-  ci_wald_inf <- lapply(fn_names, function(fn) if (is.null(V_inf))
+  ci_wald_expected <- lapply(fn_names, function(fn) if (is.null(V_expected))
     c(lo = NA_real_, hi = NA_real_) else
-      wald_ci(functionals_scalar[[fn]], theta0, V_inf, alpha = ALPHA))
-  t_winf <- elapsed_sec(t0)
+      wald_ci(functionals_scalar[[fn]], theta0, V_expected, alpha = ALPHA))
+  t_wexp <- elapsed_sec(t0)
   t0 <- proc.time()[["elapsed"]]
   ci_wald_hw <- lapply(fn_names, function(fn) if (is.null(V_hw))
     c(lo = NA_real_, hi = NA_real_) else
       wald_ci(functionals_scalar[[fn]], theta0, V_hw, alpha = ALPHA))
   t_whw <- elapsed_sec(t0)
-  names(ci_wald_inf) <- names(ci_wald_hw) <- fn_names
+  names(ci_wald_expected) <- names(ci_wald_hw) <- fn_names
 
   ## --- Monte Carlo (HW) ---------------------------------------------
   t0 <- proc.time()[["elapsed"]]
@@ -634,8 +636,8 @@ run_dataset <- function(cell_row, s) {
     hoij_vals <- if (!is.null(hoij_th)) f_v(hoij_th, th_names) else NULL
 
     cis <- list(
-      wald_inf = ci_wald_inf[[fn]][c("lo", "hi")],
-      wald_hw  = ci_wald_hw[[fn]][c("lo", "hi")],
+      wald_expected = ci_wald_expected[[fn]][c("lo", "hi")],
+      wald_hw       = ci_wald_hw[[fn]][c("lo", "hi")],
       mc_hw    = if (is.null(mc_vals)) c(NA_real_, NA_real_) else
         percentile_ci(mc_vals, ALPHA, max(40L, ceiling(0.5 * R_MC))),
       ij1      = if (is.null(ij_vals)) c(NA_real_, NA_real_) else
@@ -654,7 +656,7 @@ run_dataset <- function(cell_row, s) {
 
     ## HOIJ-2 timing includes the primary fit, the derivative setup and
     ## all B weight evaluations.
-    tms <- c(wald_inf = t_fit + t_winf, wald_hw = t_fit + t_whw,
+    tms <- c(wald_expected = t_fit + t_wexp, wald_hw = t_fit + t_whw,
              mc_hw = t_fit + t_mc, ij1 = t_fit + t_w + t_scores,
              hoij2 = t_fit + t_w + t_scores + t_hsetup + t_hloop,
              boot = t_fit + t_w + t_boot,
@@ -663,7 +665,7 @@ run_dataset <- function(cell_row, s) {
 
     boot_ok <- is.finite(boot_th[, 1])
     ffin <- c(
-      wald_inf = NA_real_, wald_hw = NA_real_,
+      wald_expected = NA_real_, wald_hw = NA_real_,
       mc_hw = if (is.null(mc_vals)) NA_real_ else mean(is.finite(mc_vals)),
       ij1   = if (is.null(ij_vals)) NA_real_ else mean(is.finite(ij_vals)),
       hoij2 = if (is.null(hoij_vals)) NA_real_ else mean(is.finite(hoij_vals)),
@@ -699,7 +701,8 @@ run_dataset <- function(cell_row, s) {
                          fallb_spread = fallb_spread, fallb_deriv = fallb_deriv,
                          grad_spread = grad_spread,
                          hoij_frac_inadmiss = if (is.null(hoij_inadmiss))
-                           NA_real_ else mean(hoij_inadmiss)))
+                           NA_real_ else mean(hoij_inadmiss),
+                         error = NA_character_))
 }
 
 
@@ -713,14 +716,28 @@ tasks <- do.call(rbind, lapply(seq_len(nrow(design)), function(ci)
   data.frame(cell = ci, s = seq_len(S))))
 cat(sprintf("\n%d tasks (cell x data set)\n", nrow(tasks)))
 
+## A task that dies takes the whole parLapplyLB() call with it, so an
+## unexpected error is caught, recorded in 'diags$error' and skipped;
+## it is never silent, because the run prints the offending tasks below.
 run_task <- function(ti) {
   tk <- tasks[ti, ]
-  run_dataset(design[design$cell == tk$cell, ], tk$s)
+  cell_row <- design[design$cell == tk$cell, ]
+  tryCatch(run_dataset(cell_row, tk$s), error = function(e)
+    list(res = NULL,
+         diag = data.frame(cell_row, s = tk$s, n_redraw = NA_integer_,
+                           converged = NA, inadmissible_primary = NA,
+                           boot_fail = NA_real_, boot_inadmiss = NA_real_,
+                           hoij_ok = NA, fallb_Hobs = NA_integer_,
+                           fallb_spread = NA_integer_, fallb_deriv = NA_integer_,
+                           grad_spread = NA_real_,
+                           hoij_frac_inadmiss = NA_real_,
+                           error = conditionMessage(e),
+                           stringsAsFactors = FALSE)))
 }
 
 cl <- makeCluster(ncores, type = "PSOCK")
 clusterExport(cl, "HOIJ_CORE")
-clusterEvalQ(cl, {
+invisible(clusterEvalQ(cl, {
   suppressPackageStartupMessages({
     library(lavaan); library(covsim); library(rvinecopulib)
   })
@@ -730,7 +747,7 @@ clusterEvalQ(cl, {
     RhpcBLASctl::blas_set_num_threads(1); RhpcBLASctl::omp_set_num_threads(1)
   }
   NULL
-})
+}))
 clusterExport(cl, c("design", "tasks", "run_dataset", "pop_syntax",
                     "Sigma_by_spec", "vita_by_spec", "ov_names",
                     "pseudo_truth", "model_analysis", "fn_names",
@@ -768,6 +785,12 @@ results <- do.call(rbind, lapply(flat, `[[`, "res"))
 diags   <- do.call(rbind, lapply(flat, `[[`, "diag"))
 if (is.null(results) || nrow(results) == 0L)
   stop("no valid result rows were produced; inspect 'diags'")
+
+n_err <- sum(!is.na(diags$error))
+if (n_err) {
+  cat(sprintf("\n%d of %d tasks failed with an error:\n", n_err, nrow(tasks)))
+  print(head(unique(diags$error[!is.na(diags$error)]), 10L))
+} else cat("\nNo task failed with an error.\n")
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
 #write.csv(results, file.path(out_dir, sprintf("hoij_sim_results_S%d_%s.csv",
@@ -820,7 +843,7 @@ print(fail_tab, row.names = FALSE, digits = 3)
 # 11. Table bodies and Figure 2
 # ---------------------------------------------------------------------
 method_order <- c("wald_expected", "wald_hw", "mc_hw", "ij1", "hoij2", "boot")
-method_label <- c(wald_inf = "Wald (Expected)", wald_hw = "Wald (HW)",
+method_label <- c(wald_expected = "Wald (Expected)", wald_hw = "Wald (HW)",
                   mc_hw = "Monte Carlo (HW)", ij1 = "IJ1 percentile",
                   hoij2 = "HOIJ-2 percentile", boot = "Bootstrap percentile")
 functional_label <- list(ab = expression(italic(ab)),
@@ -868,7 +891,7 @@ for (N_val in unique(design$N))
 tt <- safe_aggregate(time_s ~ method, results, median, na.rm = TRUE,
                      label = "time per method")
 fail_by_m <- c(
-  wald_inf = 0, wald_hw = 0,
+  wald_expected = 0, wald_hw = 0,
   mc_hw = 100 * (1 - mean(results$frac_finite[results$method == "mc_hw"],
                           na.rm = TRUE)),
   ij1   = 100 * (1 - mean(results$frac_finite[results$method == "ij1"],
@@ -894,7 +917,7 @@ layout(rbind(matrix(seq_len(length(MAIN_FNS) * n_col), nrow = length(MAIN_FNS),
        heights = c(rep(1, length(MAIN_FNS)), 0.24))
 op <- par(mar = c(4, 10.5, 2.5, 1), mgp = c(2.2, 0.7, 0))
 
-pch_map <- c(wald_inf = 1, wald_hw = 2, mc_hw = 15, ij1 = 16, hoij2 = 17,
+pch_map <- c(wald_expected = 1, wald_hw = 2, mc_hw = 15, ij1 = 16, hoij2 = 17,
              boot = 18)
 col_map <- setNames(c("black", "grey45", "firebrick", "steelblue"),
                     paste(cond_order$dist, cond_order$spec))

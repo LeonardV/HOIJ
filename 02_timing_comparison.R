@@ -136,7 +136,7 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
     stop(sprintf("[%s] derivative check failed (spread = %.3g)",
                  label, chk$spread))
 
-  t_J <- system.time({
+  t_H <- system.time({
     H_all <- compute_all_H(fit, theta0)
   })["elapsed"]
 
@@ -146,9 +146,9 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
   })["elapsed"]
 
   t_scores_hinv <- as.numeric(t_scores + t_chk)
-  t_setup <- t_scores_hinv + as.numeric(t_J) + as.numeric(t_T)
-  cat(sprintf("setup: scores+Jhat^-1 = %.4f s | J_i = %.4f s | Khat = %.4f s | total = %.4f s\n",
-              t_scores_hinv, as.numeric(t_J), as.numeric(t_T), t_setup))
+  t_setup <- t_scores_hinv + as.numeric(t_H) + as.numeric(t_T)
+  cat(sprintf("setup: scores+Hhat^-1 = %.4f s | H_i = %.4f s | Khat = %.4f s | total = %.4f s\n",
+              t_scores_hinv, as.numeric(t_H), as.numeric(t_T), t_setup))
 
   ## --- per-replicate cost: approximate bootstrap ---------------------
   set.seed(seed_data + 1)
@@ -196,7 +196,7 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
     ceiling(t_setup / (t_rep_exact - t_rep_approx)) else Inf
 
   list(label = label, D = D, fit_timing = fit_timing, t_fit = t_fit,
-       t_scores_hinv = t_scores_hinv, t_J = as.numeric(t_J),
+       t_scores_hinv = t_scores_hinv, t_H = as.numeric(t_H),
        t_T = as.numeric(t_T), t_setup = t_setup,
        t_rep_approx = t_rep_approx,
        tot_approx_1000 = tot_approx[1], tot_approx_5000 = tot_approx[2],
@@ -221,8 +221,8 @@ res_bif <- time_one_model(model_bifactor, D_expected = 27, label = "Bifactor",
 # ---------------------------------------------------------------------
 rows <- list(
   c("Median warm-start ML fit",            "t_fit",           4),
-  c("casewise scores and Jhat^-1",         "t_scores_hinv",   4),
-  c("casewise curvatures J_i",             "t_J",             4),
+  c("casewise scores and Hhat^-1",         "t_scores_hinv",   4),
+  c("casewise curvatures H_i",             "t_H",             4),
   c("third-derivative array Khat",         "t_T",             4),
   c("setup total",                         "t_setup",         4),
   c("per replication (approximate)",       "t_rep_approx",    5),
@@ -249,10 +249,10 @@ tex <- file.path(out_dir, "tab_timing.tex")
 con <- file(tex, "w")
 writeLines(c(
   sprintf("\\emph{Approximate bootstrap: setup (once)} & & \\\\"),
-  sprintf("\\quad casewise scores and $\\Jhat^{-1}$ & %s & %s \\\\",
+  sprintf("\\quad casewise scores and $\\Hhat^{-1}$ & %s & %s \\\\",
           fmt(res_med$t_scores_hinv, 4), fmt(res_bif$t_scores_hinv, 4)),
-  sprintf("\\quad casewise curvatures $J_i$ & %s & %s \\\\",
-          fmt(res_med$t_J, 4), fmt(res_bif$t_J, 4)),
+  sprintf("\\quad casewise curvatures $H_i$ & %s & %s \\\\",
+          fmt(res_med$t_H, 4), fmt(res_bif$t_H, 4)),
   sprintf("\\quad third-derivative array $\\Khat$ & %s & %s \\\\",
           fmt(res_med$t_T, 4), fmt(res_bif$t_T, 4)),
   sprintf("\\quad setup total & %s & %s \\\\",

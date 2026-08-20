@@ -12,10 +12,10 @@
 # the free parameters from a single fitted model, without refitting.
 #
 # For each multinomial weight vector w (as a bootstrap resample would
-# produce), with C = (w - 1)' S Jhat^-1 (see hoij_core.R),
+# produce), with C = (w - 1)' S Hhat^-1 (see hoij_core.R),
 #   IJ1    : theta(w) ~ theta-hat - C                         Eq. (7)
 #   HOIJ-2 : theta(w) ~ theta-hat - C + d2                    Eq. (8)
-#            d2 = Jhat^-1 J_delta C - 1/2 Jhat^-1 T(C, C)
+#            d2 = Hhat^-1 H_delta C - 1/2 Hhat^-1 T(C, C)
 # The functional is evaluated on each replicate; the standard error is
 # the standard deviation and the interval the percentile interval of
 # those values.
