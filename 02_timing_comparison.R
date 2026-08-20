@@ -12,15 +12,7 @@
 #   (ii) an orthogonal bifactor model for the same nine indicators
 #        (D = 27), which is deliberately harder to refit.
 #
-# The comparison separates the one-time derivative setup from the
-# per-replicate cost. Per-replicate costs are measured on N_TIMING = 200
-# shared weight vectors and extrapolated as
-#   approximate: setup + B * cost per replicate
-#   exact      : B * mean refit time
-# which is exactly the arithmetic reported in the table. Wall-clock
-# numbers are hardware specific; the scaling pattern (one fit plus
-# derivatives, versus B full refits) is the point.
-#
+
 # Run 00_install_dependencies.R once before this script.
 # =====================================================================
 
@@ -30,7 +22,7 @@ suppressPackageStartupMessages(library(lavaan))
 ## --- settings --------------------------------------------------------
 N_EX         <- 500     # sample size of the example data set
 N_TIMING     <- 200     # replicates used for the per-replicate timings
-N_FIT_TIMING <- 30      # repeated fits for a stable single-fit timing
+N_FIT_TIMING <- 50      # repeated fits for a stable single-fit timing
 B_TARGETS    <- c(1000, 5000)
 SEED_MED     <- 20260706
 SEED_BIF     <- 20260810
@@ -108,7 +100,6 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
   cat(sprintf("\n===== %s (D = %d) =====\n", label, D_expected))
 
   ## Population = Holzinger-Swineford ML estimates. No effect override:
-  ## this example is about computational cost, not about skewness.
   fit_pop <- sem(model_syntax, data = HolzingerSwineford1939, se = "none",
                  std.lv = std_lv)
   stopifnot(lavInspect(fit_pop, "converged"))
@@ -146,7 +137,7 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
                  label, chk$spread))
 
   t_J <- system.time({
-    J_all <- compute_all_J(fit, theta0)
+    H_all <- compute_all_H(fit, theta0)
   })["elapsed"]
 
   ## compute_T_tensor_grad() uses exactly 2 * D^2 gradient evaluations
@@ -154,8 +145,6 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
     T_arr <- compute_T_tensor_grad(grad_F, theta0)
   })["elapsed"]
 
-  ## The derivative check is a fixed cost of setting up the gradient
-  ## route, so it is reported with the scores block.
   t_scores_hinv <- as.numeric(t_scores + t_chk)
   t_setup <- t_scores_hinv + as.numeric(t_J) + as.numeric(t_T)
   cat(sprintf("setup: scores+Jhat^-1 = %.4f s | J_i = %.4f s | Khat = %.4f s | total = %.4f s\n",
@@ -168,7 +157,7 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
 
   t_loop <- system.time({
     ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
-    hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr)
+    hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr)
   })["elapsed"]
   t_rep_approx <- as.numeric(t_loop) / N_TIMING
   cat(sprintf("approximate bootstrap: %.6f s per replicate (n = %d)\n",

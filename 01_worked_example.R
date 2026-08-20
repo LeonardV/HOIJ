@@ -42,7 +42,6 @@ out_dir <- "hoij_worked_example_output"
 if (!dir.exists(out_dir)) dir.create(out_dir)
 
 cat("lavaan", as.character(packageVersion("lavaan")), "\n")
-hoij_selftest()
 
 
 # ---------------------------------------------------------------------
@@ -207,7 +206,7 @@ chk <- check_gradient_hessian(grad_F, theta0, H_obs)
 if (!is.finite(chk$spread) || chk$spread > 0.1)
   stop(sprintf("derivative check failed (spread = %.3g)", chk$spread))
 
-J_all <- compute_all_J(fit, theta0)                # N x D x D
+H_all <- compute_all_H(fit, theta0)                # N x D x D
 T_arr <- compute_T_tensor_grad(grad_F, theta0)     # D x D x D, equals -Khat
 
 
@@ -234,7 +233,7 @@ cat(sprintf("  %d converged, %d failed (%.2f%%)\n",
             sum(valid), sum(!valid), 100 * mean(!valid)))
 
 ij1   <- ij1_replicates(theta0, Scores, H.inv, dW)              # Eq. (7)
-hoij2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr)  # Eq. (8)
+hoij2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr)  # Eq. (8)
 
 set.seed(SEED_MC)
 L_mc  <- t(chol(V_hw + diag(1e-10, D)))
@@ -323,39 +322,109 @@ emit_tex(FN_SECONDARY, file.path(out_dir, "tab_intervals_secondary.tex"))
 # ---------------------------------------------------------------------
 # 7. Figure 1
 # ---------------------------------------------------------------------
-plot_panel <- function(fn, xlab) {
-  f <- functionals_all[[fn]]
-  dens <- lapply(replicates[c("boot", "hoij2", "ij1", "mc_hw")], function(m) {
-    v <- f(m); density(v[is.finite(v)])
-  })
-  plot(NA, bty = "l", ylab = "Density", xlab = xlab, main = "",
-       xlim = range(vapply(dens, function(d) range(d$x), numeric(2))),
-       ylim = c(0, max(vapply(dens, function(d) max(d$y), numeric(1)))))
-  polygon(dens$boot$x, dens$boot$y,
+# plot_panel <- function(fn, xlab) {
+#   f <- functionals_all[[fn]]
+#   dens <- lapply(replicates[c("boot", "hoij2", "ij1", "mc_hw")], function(m) {
+#     v <- f(m); density(v[is.finite(v)])
+#   })
+#   plot(NA, bty = "l", ylab = "Density", xlab = xlab, main = "",
+#        xlim = range(vapply(dens, function(d) range(d$x), numeric(2))),
+#        ylim = c(0, max(vapply(dens, function(d) max(d$y), numeric(1)))))
+#   polygon(dens$boot$x, dens$boot$y,
+#           col = adjustcolor("grey60", alpha.f = 0.5), border = NA)
+#   lines(dens$hoij2$x, dens$hoij2$y, lwd = 2, lty = 1)
+#   lines(dens$ij1$x,   dens$ij1$y,   lwd = 2, lty = 2)
+#   lines(dens$mc_hw$x, dens$mc_hw$y, lwd = 2, lty = 3)
+#   abline(v = fn_hat[fn], lwd = 1)
+# }
+# 
+# pdf(file.path(out_dir, "fig-shape.pdf"), width = 13, height = 4.2)
+# par(mfrow = c(1, 3), mar = c(4, 4, 1, 1))
+# plot_panel("ab", expression(italic(ab)))
+# legend("topright", bty = "n", cex = 0.8, merge = FALSE,
+#        legend = c("Bootstrap", "HOIJ-2", "IJ1", "Monte Carlo"),
+#        fill = c(adjustcolor("grey60", alpha.f = 0.5), NA, NA, NA),
+#        border = c("grey60", NA, NA, NA),
+#        lty = c(NA, 1, 2, 3), lwd = c(NA, 2, 2, 2))
+# ## psi_speed is an identity functional, so Monte Carlo coincides with
+# ## Wald--delta (HW) by construction: any difference from the bootstrap
+# ## in this panel comes from the reweighted estimator itself.
+# plot_panel("psi_speed", expression(psi[speed]))
+# plot_panel("omega_speed", expression(omega[speed]))
+# dev.off()
+# cat("  written:", file.path(out_dir, "fig-shape.pdf"), "\n")
+
+## ---- fig-shape: tail-magnified replicate densities -------------------------
+## Densities use a COMMON bandwidth (Silverman's rule on the bootstrap
+## replicates) so that differences between the curves cannot be artefacts of
+## per-vector bandwidth selection. The vertical scale is free within panels.
+
+tail_panel <- function(fn, side, xlab, tail_width = 0.10) {
+  f     <- functionals_all[[fn]]
+  meths <- c("boot", "hoij2", "ij1", "mc_hw")
+  vals  <- lapply(replicates[meths], function(m) { v <- f(m); v[is.finite(v)] })
+  
+  bw   <- bw.nrd0(vals$boot)
+  dens <- lapply(vals, function(v) density(v, bw = bw))
+  
+  pr <- if (side == "lower") c(0.01, tail_width) else c(1 - tail_width, 0.99)
+  xr <- range(vapply(vals, quantile, numeric(2), probs = pr, names = FALSE))
+  
+  ymax <- max(vapply(dens, function(d) {
+    inw <- d$x >= xr[1] & d$x <= xr[2]
+    if (any(inw)) max(d$y[inw]) else 0
+  }, numeric(1)))
+  
+  ## yaxs = "i": no padding below zero, so the shaded region sits flush
+  ## on the horizontal axis
+  plot(NA, bty = "l", xlim = xr, ylim = c(0, ymax * 1.05),
+       xlab = xlab, ylab = "", main = "", yaxt = "n",
+       yaxs = "i", xaxs = "i",
+       cex.lab = 1.5, cex.axis = 1.25)
+  
+  b <- dens$boot
+  polygon(c(b$x[1], b$x, b$x[length(b$x)]), c(0, b$y, 0),
           col = adjustcolor("grey60", alpha.f = 0.5), border = NA)
   lines(dens$hoij2$x, dens$hoij2$y, lwd = 2, lty = 1)
   lines(dens$ij1$x,   dens$ij1$y,   lwd = 2, lty = 2)
   lines(dens$mc_hw$x, dens$mc_hw$y, lwd = 2, lty = 3)
-  abline(v = fn_hat[fn], lwd = 1)
+  
+  q <- quantile(vals$boot, if (side == "lower") 0.025 else 0.975, names = FALSE)
+  abline(v = q, lwd = 1, col = "grey30")
 }
 
-pdf(file.path(out_dir, "fig-shape.pdf"), width = 13, height = 4.2)
-par(mfrow = c(1, 3), mar = c(4, 4, 1, 1))
-plot_panel("ab", expression(italic(ab)))
-legend("topright", bty = "n", cex = 0.8, merge = FALSE,
-       legend = c("Bootstrap", "HOIJ-2", "IJ1", "Monte Carlo"),
-       fill = c(adjustcolor("grey60", alpha.f = 0.5), NA, NA, NA),
-       border = c("grey60", NA, NA, NA),
-       lty = c(NA, 1, 2, 3), lwd = c(NA, 2, 2, 2))
+fns  <- c("ab", "psi_speed", "omega_speed")
+labs <- list(expression(italic(ab)), expression(psi[speed]),
+             expression(omega[speed]))
+
+pdf(file.path(out_dir, "fig-tail.pdf"), width = 13, height = 7.5)
+par(mfrow = c(2, 3), mar = c(4.8, 2, 2.8, 1))
+
+for (i in seq_along(fns)) {
+  tail_panel(fns[i], "lower", labs[[i]])
+  if (i == 1) {
+    legend("topleft", inset = c(0, 0.02), bty = "n", cex = 1.15, merge = FALSE,
+           legend = c("Bootstrap", "HOIJ-2", "IJ1", "Monte Carlo",
+                      "Bootstrap percentile limit"),
+           fill   = c(adjustcolor("grey60", alpha.f = 0.5), NA, NA, NA, NA),
+           border = c("grey60", NA, NA, NA, NA),
+           col    = c(NA, "black", "black", "black", "grey30"),
+           lty    = c(NA, 1, 2, 3, 1),
+           lwd    = c(NA, 2, 2, 2, 1))
+  }
+  if (i == 2) title(main = "Lower tail", cex.main = 1.5)
+}
+
 ## psi_speed is an identity functional, so Monte Carlo coincides with
 ## Wald--delta (HW) by construction: any difference from the bootstrap
 ## in this panel comes from the reweighted estimator itself.
-plot_panel("psi_speed", expression(psi[speed]))
-plot_panel("omega_speed", expression(omega[speed]))
+for (i in seq_along(fns)) {
+  tail_panel(fns[i], "upper", labs[[i]])
+  if (i == 2) title(main = "Upper tail", cex.main = 1.5)
+}
+
 dev.off()
-cat("  written:", file.path(out_dir, "fig-shape.pdf"), "\n")
-
-
+cat("  written:", file.path(out_dir, "fig-tail.pdf"), "\n")
 # ---------------------------------------------------------------------
 # 8. Replicate-level agreement between HOIJ-2 and the exact bootstrap
 # ---------------------------------------------------------------------
