@@ -31,7 +31,7 @@
 #   hoij_lavaan(fit, functional = c("a*b", "speed~~speed"))
 # =====================================================================
 
-if (!exists("compute_all_J", mode = "function")) source("hoij_core.R")
+if (!exists("compute_all_H", mode = "function")) source("hoij_core.R")
 
 
 # ---------------------------------------------------------------------
@@ -175,7 +175,7 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
     stop("Scores or observed information are not available for this model.",
          call. = FALSE)
 
-  grad_spread <- NA_real_; J_all <- NULL; T_arr <- NULL
+  grad_spread <- NA_real_; H_all <- NULL; T_arr <- NULL
   if (order == 2L) {
     H_obs  <- lavaan::lavTech(fit, "information.observed")
     grad_F <- make_grad_F(fit)
@@ -189,7 +189,7 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
                           "bootstrap."), chk$spread, spread_tol),
            call. = FALSE)
     T_arr <- compute_T_tensor_grad(grad_F, theta0)
-    J_all <- compute_all_J(fit, theta0)
+    H_all <- compute_all_H(fit, theta0)
   }
   t_setup <- proc.time()[["elapsed"]] - t0
 
@@ -200,7 +200,7 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
 
   ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
   theta_rep <- if (order == 2L)
-    hoij2_replicates(theta0, ij1$C, dW, H.inv, J_all, T_arr) else ij1$theta
+    hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr) else ij1$theta
   inadmiss <- if (length(var_idx))
     apply(theta_rep[, var_idx, drop = FALSE] < 0, 1, any) else rep(FALSE, B)
   t_rep <- proc.time()[["elapsed"]] - t0

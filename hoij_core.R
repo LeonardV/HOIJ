@@ -1,5 +1,5 @@
 # =====================================================================
-# hoij_core.R -- computational kernel shared by all analysis scripts
+# hoij_core.R -- computational kernel 
 #
 # Companion code for:
 #   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
@@ -8,32 +8,22 @@
 #
 # Notation follows the article:
 #   s_i(theta)   casewise score                                 Eq. (2)
-#   J_i(theta)   casewise observed information                  Eq. (3)
-#   Jhat         mean casewise information at theta-hat
+#   H_i(theta)   casewise observed information                  Eq. (3)
+#   Hhat         mean casewise information at theta-hat
 #   g_delta      weight perturbation of the score               Eq. (6)
 #   J_delta      weight perturbation of the information         Eq. (9)
-#   Khat(u, v)   third-derivative contraction                  Eq. (12)
-#   IJ1          theta-hat + Jhat^-1 g_delta                    Eq. (7)
-#   HOIJ-2       IJ1 - Jhat^-1 J_delta d + 1/2 Jhat^-1 Khat(d, d), Eq. (8)
+#   Khat(u, v)   third-derivative contraction                   Eq. (12)
+#   IJ1          theta-hat + Hhat^-1 g_delta                    Eq. (7)
+#   HOIJ-2       IJ1 - Hhat^-1 H_delta d + 1/2 Hhat^-1 Khat(d, d), Eq. (8)
 #
-# lavaan conventions relied upon (all verified by hoij_selftest()):
+# lavaan conventions relied upon:
 #   lavScores(fit, scaling = TRUE)         = -s_i(theta-hat) / N
-#   lavTech(fit, "information.observed")   = sum_i J_i(theta-hat) / N = Jhat
+#   lavTech(fit, "information.observed")   = sum_i H_i(theta-hat) / N = Hhat
 #   compute_T_tensor_grad()                = -Khat
-#     (it differentiates the function lavaan optimises, which for
-#      normal-theory ML is the negative mean log-likelihood up to a
-#      constant, hence the sign flip; the sign is absorbed in
-#      hoij2_replicates() below)
 # =====================================================================
 
-
-# ---------------------------------------------------------------------
 # lavaan internals
-#
-# The kernel needs three non-exported lavaan helpers. They were renamed
-# between the CRAN release and the development version, so both
-# spellings are resolved at run time. See 00_install_dependencies.R.
-# ---------------------------------------------------------------------
+
 .hoij_internals <- local({
   cache <- NULL
   function() {
@@ -49,8 +39,6 @@
            as.character(utils::packageVersion("lavaan")),
            ") is not supported.", call. = FALSE)
     }
-    ## lav_model_implied() accepts `...`, so passing the wrong argument
-    ## name would be silently ignored and J_i would collapse to zero.
     glist_arg <- function(f) {
       fa <- names(formals(f))
       if ("glist" %in% fa) "glist" else if ("GLIST" %in% fa) "GLIST" else
@@ -70,12 +58,8 @@
 })
 
 
-# ---------------------------------------------------------------------
+
 # Casewise log-likelihood, Eq. (1)
-#
-# Returns the N contributions ell_i(theta) for an arbitrary theta, so
-# that casewise derivatives can be taken numerically.
-# ---------------------------------------------------------------------
 compute_loglik_casewise <- function(fit, theta) {
   X <- fit@Data@X[[1]]
   N <- nrow(X); p <- ncol(X)
@@ -99,15 +83,10 @@ compute_loglik_casewise <- function(fit, theta) {
 }
 
 
-# ---------------------------------------------------------------------
-# Casewise observed information J_i, Eq. (3)
-#
-# Central second differences of the casewise log-likelihood; returns an
-# N x D x D array.
-# ---------------------------------------------------------------------
-compute_all_J <- function(fit, theta0, delta = 1e-5) {
+# Casewise observed information H_i, Eq. (3)
+compute_all_H <- function(fit, theta0, delta = 1e-5) {
   D <- length(theta0); N <- nrow(fit@Data@X[[1]])
-  J_array <- array(0, dim = c(N, D, D))
+  H_array <- array(0, dim = c(N, D, D))
   ll_0 <- compute_loglik_casewise(fit, theta0)
 
   bump <- function(idx, sgn) {
@@ -119,27 +98,25 @@ compute_all_J <- function(fit, theta0, delta = 1e-5) {
       if (k == l) {
         ll_p <- compute_loglik_casewise(fit, bump(k,  1))
         ll_m <- compute_loglik_casewise(fit, bump(k, -1))
-        J_array[, k, k] <- -(ll_p - 2 * ll_0 + ll_m) / delta^2
+        H_array[, k, k] <- -(ll_p - 2 * ll_0 + ll_m) / delta^2
       } else {
         th_pp <- bump(k, 1);  th_pp[l] <- th_pp[l] + delta
         th_pm <- bump(k, 1);  th_pm[l] <- th_pm[l] - delta
         th_mp <- bump(k, -1); th_mp[l] <- th_mp[l] + delta
         th_mm <- bump(k, -1); th_mm[l] <- th_mm[l] - delta
-        J_array[, k, l] <- -(compute_loglik_casewise(fit, th_pp) -
+        H_array[, k, l] <- -(compute_loglik_casewise(fit, th_pp) -
                              compute_loglik_casewise(fit, th_pm) -
                              compute_loglik_casewise(fit, th_mp) +
                              compute_loglik_casewise(fit, th_mm)) / (4 * delta^2)
-        J_array[, l, k] <- J_array[, k, l]
+        H_array[, l, k] <- H_array[, k, l]
       }
     }
   }
-  J_array
+  H_array
 }
 
 
-# ---------------------------------------------------------------------
 # Analytic gradient of lavaan's fit function F, as a function of theta
-# ---------------------------------------------------------------------
 make_grad_F <- function(fit) {
   ints <- .hoij_internals()
   lavmodel <- fit@Model; lavsamplestats <- fit@SampleStats
@@ -154,23 +131,7 @@ make_grad_F <- function(fit) {
 }
 
 
-# ---------------------------------------------------------------------
 # Consistency check on the finite-difference route
-#
-# The third derivatives below are second differences of lavaan's analytic
-# gradient. No rescaling is applied: for normal-theory ML the function
-# lavaan optimises is the negative mean log-likelihood up to a constant,
-# which is what hoij_selftest() checks (b), so its derivatives are
-# already on the scale of Eq. (12). Earlier versions estimated a scale
-# factor here; it is identically one, because it compared two
-# derivatives of the same objective.
-#
-# What is worth checking is that the same finite differences reproduce
-# lavaan's analytic observed information. `spread` is the largest
-# element-wise relative deviation. It is small (1e-6 or less) when the
-# route works, and large when the step size is unusable or the gradient
-# does not respond to theta at all.
-# ---------------------------------------------------------------------
 check_gradient_hessian <- function(grad_F, theta0, H_observed, h = 1e-5) {
   D <- length(theta0)
   H_grad <- matrix(NA_real_, D, D)
@@ -189,14 +150,7 @@ check_gradient_hessian <- function(grad_F, theta0, H_observed, h = 1e-5) {
 }
 
 
-# ---------------------------------------------------------------------
 # Third-derivative array, Eq. (12)
-#
-# Central second differences of the analytic gradient, symmetrised over
-# all index permutations. Returns a D x D x D array equal to -Khat. For
-# large D the contraction can be evaluated by directional
-# differentiation instead of storing the full array.
-# ---------------------------------------------------------------------
 compute_T_tensor_grad <- function(grad_F, theta, h = 1e-4) {
   D <- length(theta)
   T_arr <- array(0, dim = c(D, D, D))
@@ -227,14 +181,7 @@ compute_T_tensor_grad <- function(grad_F, theta, h = 1e-4) {
 }
 
 
-# ---------------------------------------------------------------------
 # First-order replicates, Eq. (7)
-#
-# dW is the B x N matrix of weight changes w* - 1. With
-# Scores = -s_i/N, the row vector C = dW %*% Scores %*% Jhat^-1 equals
-# -Jhat^-1 g_delta, so IJ1 = theta-hat - C. C is returned because the
-# second-order step reuses it.
-# ---------------------------------------------------------------------
 ij1_replicates <- function(theta0, Scores, H.inv, dW) {
   C_mat <- (dW %*% Scores) %*% H.inv                       # B x D
   theta_rep <- sweep(-C_mat, 2, theta0, "+")
@@ -243,21 +190,12 @@ ij1_replicates <- function(theta0, Scores, H.inv, dW) {
 }
 
 
-# ---------------------------------------------------------------------
 # Second-order replicates, Eq. (8)
-#
-# With d1 = -C the first-order step, the two second-order terms are
-#   Bc = Jhat^-1 J_delta C   = -Jhat^-1 J_delta d1
-#   Ac = 1/2 Jhat^-1 T(C, C) = -1/2 Jhat^-1 Khat(d1, d1)
-# so that theta-hat + d1 + (Bc - Ac) is exactly Eq. (8). No damping or
-# trust region is applied: the replicate is the second-order Taylor
-# expansion as written.
-# ---------------------------------------------------------------------
-hoij2_replicates <- function(theta0, C_mat, dW, H.inv, J_all, T_arr) {
-  D <- length(theta0); B <- nrow(C_mat); N <- dim(J_all)[1]
+hoij2_replicates <- function(theta0, C_mat, dW, H.inv, H_all, T_arr) {
+  D <- length(theta0); B <- nrow(C_mat); N <- dim(H_all)[1]
 
   Tmat  <- matrix(T_arr, nrow = D)                         # D x D^2
-  J_2d  <- matrix(J_all, nrow = N, ncol = D * D)           # N x D^2
+  J_2d  <- matrix(H_all, nrow = N, ncol = D * D)           # N x D^2
   JW_2d <- (dW %*% J_2d) / N                               # B x D^2, Eq. (9)
   HT    <- H.inv %*% Tmat
 
@@ -275,11 +213,9 @@ hoij2_replicates <- function(theta0, C_mat, dW, H.inv, J_all, T_arr) {
 }
 
 
-# ---------------------------------------------------------------------
-# Small utilities used by the analysis scripts
-# ---------------------------------------------------------------------
+## Utilities functions
 
-## numerical gradient of a scalar functional phi(theta)
+# numerical gradient of a scalar functional phi(theta)
 num_grad_f <- function(f, theta, delta = 1e-5) {
   vapply(seq_along(theta), function(k) {
     tp <- theta; tp[k] <- tp[k] + delta
@@ -288,7 +224,7 @@ num_grad_f <- function(f, theta, delta = 1e-5) {
   }, numeric(1))
 }
 
-## symmetric delta-method interval
+# symmetric delta-method interval
 wald_ci <- function(f, theta0, vcov_mat, alpha = 0.05) {
   grad <- num_grad_f(f, theta0)
   se   <- sqrt(max(0, as.numeric(t(grad) %*% vcov_mat %*% grad)))
@@ -297,7 +233,7 @@ wald_ci <- function(f, theta0, vcov_mat, alpha = 0.05) {
     hi = est + qnorm(1 - alpha / 2) * se, se = se)
 }
 
-## equal-tailed percentile interval over replicate functional values
+# equal-tailed percentile interval over replicate functional values
 percentile_ci <- function(vals, alpha = 0.05, min_n = 40L) {
   vals <- vals[is.finite(vals)]
   if (length(vals) < min_n) return(c(lo = NA_real_, hi = NA_real_))
@@ -311,89 +247,4 @@ skewness <- function(x) {
   m <- mean(x); v <- mean((x - m)^2)
   if (!is.finite(v) || v <= 0) return(NA_real_)
   mean((x - m)^3) / v^1.5
-}
-
-
-# ---------------------------------------------------------------------
-# Self-test of the scaling conventions
-#
-# Every quantity above depends on a lavaan convention that is not part
-# of the documented API. The five checks below verify each of them on a
-# one-factor model, and are cheap enough to run before every analysis.
-# ---------------------------------------------------------------------
-hoij_selftest <- function(tol_rel = 0.01, verbose = TRUE) {
-  say <- function(...) if (verbose) cat(sprintf(...))
-  say("-- hoij_core self-test (lavaan %s) --\n",
-      as.character(packageVersion("lavaan")))
-
-  fit <- lavaan::sem("f =~ x1 + x2 + x3",
-                     data = lavaan::HolzingerSwineford1939,
-                     estimator = "ML", se = "robust.huber.white")
-  th0 <- lavaan::coef(fit, type = "free")
-  D <- length(th0); N <- nrow(fit@Data@X[[1]]); h <- 1e-6
-
-  ## (a) lavScores(scaling = TRUE) = -s_i / N
-  S_num <- vapply(seq_len(D), function(k) {
-    tp <- th0; tp[k] <- tp[k] + h
-    tm <- th0; tm[k] <- tm[k] - h
-    (compute_loglik_casewise(fit, tp) -
-       compute_loglik_casewise(fit, tm)) / (2 * h)
-  }, numeric(N))
-  r_sc <- median(as.numeric(lavaan::lavScores(fit, scaling = TRUE)) /
-                   as.numeric(S_num)) * N
-  ok_a <- is.finite(r_sc) && abs(r_sc + 1) < tol_rel
-  say("  (a) lavScores scale    : N * ratio = %+.6f (expect -1)  %s\n",
-      r_sc, if (ok_a) "OK" else "FAIL")
-
-  ## (b) information.observed = sum_i J_i / N   (also catches J_i == 0)
-  J_sum <- apply(compute_all_J(fit, th0), c(2, 3), sum)
-  H_obs <- lavaan::lavTech(fit, "information.observed")
-  r_H <- median(as.numeric(H_obs) / as.numeric(J_sum)) * N
-  ok_b <- is.finite(r_H) && abs(r_H - 1) < tol_rel
-  say("  (b) observed info      : N * ratio = %+.6f (expect +1)  %s\n",
-      r_H, if (ok_b) "OK" else "FAIL")
-
-  ## (c) the finite differences reproduce lavaan's observed information
-  grad_F <- make_grad_F(fit)
-  chk <- tryCatch(check_gradient_hessian(grad_F, th0, H_obs),
-                  error = function(e) NULL)
-  ok_c <- !is.null(chk) && is.finite(chk$spread) && chk$spread < 0.01 &&
-    abs(chk$ratio - 1) < tol_rel
-  say("  (c) gradient Hessian   : ratio = %+.6f, spread = %.2e  %s\n",
-      if (is.null(chk)) NA else chk$ratio,
-      if (is.null(chk)) NA else chk$spread, if (ok_c) "OK" else "FAIL")
-
-  ## (d) T array against a direct third derivative of -mean log-likelihood
-  ok_d <- FALSE
-  if (ok_c) {
-    T_arr <- compute_T_tensor_grad(grad_F, th0)
-    f_tot <- function(th) -sum(compute_loglik_casewise(fit, th)) / N
-    hh <- 1e-3
-    k <- which.max(abs(T_arr[cbind(1:D, 1:D, 1:D)]))
-    pert <- function(sgn) { th <- th0; th[k] <- th[k] + sgn * hh; th }
-    t_dir <- (f_tot(pert(2)) - 2 * f_tot(pert(1)) +
-                2 * f_tot(pert(-1)) - f_tot(pert(-2))) / (2 * hh^3)
-    r_T <- T_arr[k, k, k] / t_dir
-    ok_d <- is.finite(r_T) && abs(r_T - 1) < 0.05
-    say("  (d) third derivatives  : ratio = %+.6f (expect +1)   %s\n",
-        r_T, if (ok_d) "OK" else "FAIL")
-  } else {
-    say("  (d) third derivatives  : skipped (check (c) failed)\n")
-  }
-
-  ## (e) expected-information vcov used by the Wald-delta (Inf) comparator
-  fit_std <- lavaan::sem("f =~ x1 + x2 + x3",
-                         data = lavaan::HolzingerSwineford1939,
-                         estimator = "ML", se = "standard")
-  r_e <- max(abs(lavaan::lavTech(fit, "inverted.information.expected") / N /
-                   lavaan::lavInspect(fit_std, "vcov") - 1))
-  ok_e <- is.finite(r_e) && r_e < 1e-6
-  say("  (e) expected info scale: max rel. deviation = %.2e  %s\n",
-      r_e, if (ok_e) "OK" else "FAIL")
-
-  ok <- ok_a && ok_b && ok_c && ok_d && ok_e
-  if (ok) say("  self-test PASSED\n\n") else
-    warning("hoij_core self-test FAILED; fix this before interpreting any ",
-            "IJ1/HOIJ-2 output.", call. = FALSE)
-  invisible(ok)
 }
