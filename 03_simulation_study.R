@@ -26,7 +26,7 @@
 #   constants    S = 1,000 data sets per cell; B = 1,000 multinomial
 #                weight vectors per data set, drawn once and shared by
 #                the exact bootstrap, IJ1 and HOIJ-2
-#   methods      wald_inf, wald_hw, mc_hw, ij1, hoij2, boot
+#   methods      wald_expected, wald_hw, mc_hw, ij1, hoij2, boot
 #                (plus hoij2_sens and boot_bca as sensitivity checks;
 #                 neither is reported in the article)
 #   estimand     phi(theta*). For the normal conditions theta* is
@@ -333,8 +333,6 @@ print(round(do.call(rbind, pseudo_truth), 4))
 # ---------------------------------------------------------------------
 # 6. Pre-flight checks
 # ---------------------------------------------------------------------
-hoij_selftest()
-
 local({
   set.seed(SEED_BASE)
   md <- moment_diag(simulate_vita_data(50000L, "correct", center = TRUE))
@@ -446,7 +444,7 @@ safe_aggregate <- function(formula, data, FUN, ..., label = deparse(formula)) {
 # ---------------------------------------------------------------------
 # 8. One data set: six interval methods on shared weight vectors
 # ---------------------------------------------------------------------
-methods_all <- c("wald_inf", "wald_hw", "mc_hw", "ij1", "hoij2", "boot",
+methods_all <- c("wald_expected", "wald_hw", "mc_hw", "ij1", "hoij2", "boot",
                  "hoij2_sens", if (INCLUDE_BCA) "boot_bca")
 
 run_dataset <- function(cell_row, s) {
@@ -601,13 +599,13 @@ run_dataset <- function(cell_row, s) {
       } else {
         T_arr <- tryCatch(compute_T_tensor_grad(grad_F, theta0),
                           error = function(e) NULL)
-        J_all <- tryCatch(compute_all_J(fit_k, theta0), error = function(e) NULL)
-        if (is.null(T_arr) || is.null(J_all)) {
+        H_all <- tryCatch(compute_all_H(fit_k, theta0), error = function(e) NULL)
+        if (is.null(T_arr) || is.null(H_all)) {
           fallb_deriv <- 1L
         } else {
           t_hsetup <- elapsed_sec(t0)
           t0 <- proc.time()[["elapsed"]]
-          hoij_th <- hoij2_replicates(theta0, C_mat, dW, H.inv, J_all, T_arr)
+          hoij_th <- hoij2_replicates(theta0, C_mat, dW, H.inv, H_all, T_arr)
           hoij_inadmiss <- apply(hoij_th[, var_idx, drop = FALSE] < 0, 1, any)
           t_hloop <- elapsed_sec(t0)
         }
@@ -760,6 +758,7 @@ for (ch in seq_along(chunks)) {
               el / 60 * (nrow(tasks) / done - 1)))
   ## checkpoint per chunk; to resume, read the partial files back in
   saveRDS(res_list[[ch]],
+          #file.path(out_dir, sprintf("hoij_sim_N100_partial_chunk%03d.rds", ch)))
           file.path(out_dir, sprintf("hoij_sim_partial_chunk%03d.rds", ch)))
 }
 stopCluster(cl)
@@ -771,8 +770,8 @@ if (is.null(results) || nrow(results) == 0L)
   stop("no valid result rows were produced; inspect 'diags'")
 
 stamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-write.csv(results, file.path(out_dir, sprintf("hoij_sim_results_S%d_%s.csv",
-                                              S, stamp)), row.names = FALSE)
+#write.csv(results, file.path(out_dir, sprintf("hoij_sim_results_S%d_%s.csv",
+#                                              S, stamp)), row.names = FALSE)
 saveRDS(list(results = results, diags = diags, design = design,
              pseudo_truth = pseudo_truth, delta_star = delta_star,
              rmsea_achieved = rmsea_achieved,
@@ -782,6 +781,7 @@ saveRDS(list(results = results, diags = diags, design = design,
                            VITA_SDLOG = VITA_SDLOG, SEED_BASE = SEED_BASE,
                            SMOKE_TEST = SMOKE_TEST),
              sessionInfo = sessionInfo()),
+        #file.path(out_dir, sprintf("hoij_sim_N100_S%d_%s.rds", S, stamp)))
         file.path(out_dir, sprintf("hoij_sim_full_S%d_%s.rds", S, stamp)))
 cat(sprintf("\nRaw results written (%d rows)\n", nrow(results)))
 
@@ -819,8 +819,8 @@ print(fail_tab, row.names = FALSE, digits = 3)
 # ---------------------------------------------------------------------
 # 11. Table bodies and Figure 2
 # ---------------------------------------------------------------------
-method_order <- c("wald_inf", "wald_hw", "mc_hw", "ij1", "hoij2", "boot")
-method_label <- c(wald_inf = "Wald--delta (Inf)", wald_hw = "Wald--delta (HW)",
+method_order <- c("wald_expected", "wald_hw", "mc_hw", "ij1", "hoij2", "boot")
+method_label <- c(wald_inf = "Wald (Expected)", wald_hw = "Wald (HW)",
                   mc_hw = "Monte Carlo (HW)", ij1 = "IJ1 percentile",
                   hoij2 = "HOIJ-2 percentile", boot = "Bootstrap percentile")
 functional_label <- list(ab = expression(italic(ab)),
