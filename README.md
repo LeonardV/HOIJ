@@ -17,7 +17,7 @@ instead of refitting the model for every bootstrap resample.
 |---|---|
 | `00_install_dependencies.R` | Installs the development version of **lavaan** and the remaining packages. Run once. |
 | `hoij_core.R` | Computational kernel: casewise scores and curvature, third derivatives, the IJ1 and HOIJ-2 replicates of Eq. (7) and Eq. (8), and `hoij_selftest()`. |
-| `01_worked_example.R` | Section 3: Table 2, Table 5 and Figure 1 (`fig-shape.pdf`). |
+| `01_worked_example.R` | Section 3: Table 2, Table 5 and Figure 1 (`fig-tail.pdf`). |
 | `02_timing_comparison.R` | Table 3: timing decomposition for the mediation (D = 21) and bifactor (D = 27) models. |
 | `03_simulation_study.R` | Section 4: Figure 2 (`fig-sim-coverage.pdf`) and the `tab_sim_*.tex` table bodies used by `\inputtablebody`. |
 | `hoij_lavaan.R` | `hoij_lavaan()`, a reusable function that returns HOIJ-2 standard errors and percentile intervals for your own fitted lavaan model. |

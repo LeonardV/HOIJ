@@ -10,7 +10,9 @@
 #   Table 2  distributional SD, skewness and 95% limits for ab,
 #            psi_speed and omega_speed
 #   Table 5  the same summaries for |ab|, theta_11, R2_speed and P_M
-#   Figure 1 fig-shape.pdf, replicate densities for the three targets
+#   Figure 1 fig-tail.pdf, tail-magnified replicate densities for the
+#            three targets (the single-panel fig-shape.pdf version is
+#            kept commented out below)
 #
 # One data set (N = 500) from a weak-effect latent mediation population,
 # and B = 5,000 multinomial weight vectors that are shared by IJ1,
@@ -182,13 +184,15 @@ cat("\nPoint estimates:\n"); print(round(fn_hat, 4))
 # ---------------------------------------------------------------------
 # 3. Covariance matrices for the two Wald comparators
 # ---------------------------------------------------------------------
-fit_inf <- sem(model_med, data = dat, estimator = "ML",
-               se = "standard", information = "expected")
+fit_expected <- sem(model_med, data = dat, estimator = "ML",
+                    se = "standard", information = "expected")
 fit_hw  <- sem(model_med, data = dat, estimator = "ML",
                se = "robust.huber.white")
-stopifnot(lavInspect(fit_inf, "converged"), lavInspect(fit_hw, "converged"))
+stopifnot(lavInspect(fit_expected, "converged"),
+          lavInspect(fit_hw, "converged"))
 
-V_inf <- lavInspect(fit_inf, "vcov")[th_names, th_names, drop = FALSE]
+V_expected <- lavInspect(fit_expected, "vcov")[th_names, th_names,
+                                               drop = FALSE]
 V_hw  <- lavInspect(fit_hw,  "vcov")[th_names, th_names, drop = FALSE]
 stopifnot(max(abs(coef(fit_hw, type = "free")[th_names] - theta0)) < 1e-6)
 
@@ -197,8 +201,8 @@ stopifnot(max(abs(coef(fit_hw, type = "free")[th_names] - theta0)) < 1e-6)
 # 4. One-time HOIJ setup: scores, curvature and third derivatives
 # ---------------------------------------------------------------------
 Scores <- lavScores(fit, scaling = TRUE)                  # N x D
-H.inv  <- lavTech(fit, "inverted.information.observed")   # Jhat^-1
-H_obs  <- lavTech(fit, "information.observed")            # Jhat
+H.inv  <- lavTech(fit, "inverted.information.observed")   # Hhat^-1
+H_obs  <- lavTech(fit, "information.observed")            # Hhat
 dimnames(H.inv) <- list(th_names, th_names)
 
 grad_F <- make_grad_F(fit)
@@ -252,12 +256,12 @@ replicates <- list(mc_hw = mc_th,
 # ---------------------------------------------------------------------
 # 6. Tables 2 and 5
 # ---------------------------------------------------------------------
-method_label <- c(wald_inf = "Wald--delta (Inf)",
-                  wald_hw  = "Wald--delta (HW)",
-                  mc_hw    = "Monte Carlo (HW)",
-                  ij1      = "IJ1 percentile",
-                  hoij2    = "HOIJ-2 percentile",
-                  boot     = "Bootstrap percentile")
+method_label <- c(wald_expected = "Wald (Expected)",
+                  wald_hw       = "Wald (HW)",
+                  mc_hw         = "Monte Carlo (HW)",
+                  ij1           = "IJ1 percentile",
+                  hoij2         = "HOIJ-2 percentile",
+                  boot          = "Bootstrap percentile")
 
 summarise_functional <- function(fn) {
   f_mat <- functionals_all[[fn]]
@@ -278,7 +282,7 @@ summarise_functional <- function(fn) {
                skewness = skewness(vf),
                lo = unname(ci["lo"]), hi = unname(ci["hi"]))
   }
-  rbind(wald_row("wald_inf", V_inf), wald_row("wald_hw", V_hw),
+  rbind(wald_row("wald_expected", V_expected), wald_row("wald_hw", V_hw),
         do.call(rbind, lapply(names(replicates), perc_row)))
 }
 
@@ -347,14 +351,14 @@ emit_tex(FN_SECONDARY, file.path(out_dir, "tab_intervals_secondary.tex"))
 #        border = c("grey60", NA, NA, NA),
 #        lty = c(NA, 1, 2, 3), lwd = c(NA, 2, 2, 2))
 # ## psi_speed is an identity functional, so Monte Carlo coincides with
-# ## Wald--delta (HW) by construction: any difference from the bootstrap
+# ## Wald (HW) by construction: any difference from the bootstrap
 # ## in this panel comes from the reweighted estimator itself.
 # plot_panel("psi_speed", expression(psi[speed]))
 # plot_panel("omega_speed", expression(omega[speed]))
 # dev.off()
 # cat("  written:", file.path(out_dir, "fig-shape.pdf"), "\n")
 
-## ---- fig-shape: tail-magnified replicate densities -------------------------
+## ---- fig-tail: tail-magnified replicate densities -------------------------
 ## Densities use a COMMON bandwidth (Silverman's rule on the bootstrap
 ## replicates) so that differences between the curves cannot be artefacts of
 ## per-vector bandwidth selection. The vertical scale is free within panels.
@@ -416,7 +420,7 @@ for (i in seq_along(fns)) {
 }
 
 ## psi_speed is an identity functional, so Monte Carlo coincides with
-## Wald--delta (HW) by construction: any difference from the bootstrap
+## Wald (HW) by construction: any difference from the bootstrap
 ## in this panel comes from the reweighted estimator itself.
 for (i in seq_along(fns)) {
   tail_panel(fns[i], "upper", labs[[i]])
@@ -455,7 +459,7 @@ saveRDS(list(seeds = c(data = SEED_DATA, weights = SEED_WEIGHTS,
              effect_pars = EFFECT_PARS, N = N, B = B, R_MC = R_MC, D = D,
              theta0 = theta0, fn_hat = fn_hat,
              valid = valid, replicates = replicates, W_counts = W_counts,
-             V_inf = V_inf, V_hw = V_hw,
+             V_expected = V_expected, V_hw = V_hw,
              tab_intervals = tab_intervals, tab_pairwise = tab_pairwise,
              sessionInfo = sessionInfo()),
         file.path(out_dir, sprintf("worked_example_%s.rds", stamp)))
