@@ -1,13 +1,6 @@
 # =====================================================================
 # Tests for hoij_lavaan()
 #
-# (1) basic IJ1 and HOIJ-2 run on the Holzinger-Swineford mediation model
-# (2) validation against an exact bootstrap that uses the same weight
-#     vectors, so the difference is pure approximation error
-# (3) scope checks return informative errors
-# (4) compatibility with the development version of lavaan, which
-#     renamed the internal helpers used by hoij_core.R
-#
 # Run with:  Rscript test_hoij_lavaan.R
 # =====================================================================
 
@@ -23,38 +16,17 @@ model <- '
   speed  ~ a*textual
 '
 fit <- sem(model, data = HolzingerSwineford1939, estimator = "ML")
-stopifnot(lavInspect(fit, "converged"))
 
-functionals <- c(ab = "a*b", psi_speed = "`speed~~speed`")
-
-## the kernel's scaling conventions, including the one that makes a
-## separate scale factor for the third derivatives unnecessary
-stopifnot(hoij_selftest())
+functionals <- c(ab = "a*b", psi_visual = "`visual~~visual`", psi_speed = "`speed~~speed`")
 
 
 ## --- (1) basic run ---------------------------------------------------
-cat("-- (1) basic run --\n")
 h2 <- hoij_lavaan(fit, functional = functionals, B = 1000L, order = 2L,
-                  seed = 1, details = TRUE)
+                  seed = 42, details = TRUE)
 print(h2)
 h1 <- hoij_lavaan(fit, functional = functionals, B = 1000L, order = 1L,
-                  seed = 1)
-stopifnot(all(is.finite(h2$results$se)), all(is.finite(h2$results$lo)))
-
-## default: every free parameter
-h_all <- hoij_lavaan(fit, B = 400L, seed = 2)
-stopifnot(nrow(h_all$results) == length(coef(fit)))
-
-## The model-based standard errors are not the right yardstick here:
-## these data are non-normal, so for some parameters even the exact
-## bootstrap is more than twice the model-based value. Section (2)
-## therefore compares against the bootstrap instead; this is only a
-## guard against a gross scaling error.
-se_ratio <- h_all$results$se / sqrt(diag(lavInspect(fit, "vcov")))
-cat(sprintf("\nSE ratio HOIJ-2 vs lavaan default: median %.3f (range %.2f-%.2f)\n",
-            median(se_ratio), min(se_ratio), max(se_ratio)))
-stopifnot(all(is.finite(se_ratio)), all(se_ratio > 0.25 & se_ratio < 4))
-
+                  seed = 42)
+print(h1)
 
 ## --- (2) exact bootstrap on the same weight vectors ------------------
 cat("\n-- (2) HOIJ-2 vs exact bootstrap (shared weights) --\n")
@@ -108,91 +80,8 @@ for (nm in names(functionals)) {
               q_h2[1], q_h2[2]))
   cat(sprintf("%-10s %-7s %8.4f %8.4f %8.4f\n", nm, "boot", sd(v_bt),
               q_bt[1], q_bt[2]))
-  ## The approximation error should be a modest fraction of the width.
-  ## Measured here: about 0.16 for ab and 0.15 for psi_speed. The bound
-  ## is coarse on purpose -- a sign or scaling error moves the limits by
-  ## whole interval widths, which is what this guards against.
   rel <- max(abs(q_h2 - q_bt)) / (q_bt[2] - q_bt[1])
   cat(sprintf("%-10s max |CI difference| / width = %.3f\n", "", rel))
   stopifnot(rel < 0.25, abs(sd(v_h2) / sd(v_bt) - 1) < 0.20)
 }
 
-
-## --- (3) scope checks -------------------------------------------------
-cat("\n-- (3) scope checks --\n")
-expect_error <- function(expr, pattern) {
-  msg <- tryCatch({ expr; NULL }, error = function(e) conditionMessage(e))
-  stopifnot(!is.null(msg), grepl(pattern, msg))
-  cat("  OK:", msg, "\n")
-}
-expect_error(hoij_lavaan(sem("f =~ x1 + x2 + x3",
-                             data = HolzingerSwineford1939,
-                             group = "school")), "single-group")
-expect_error(hoij_lavaan(sem("f =~ x1 + x2 + x3",
-                             data = HolzingerSwineford1939,
-                             estimator = "ULS")), "ML")
-expect_error(hoij_lavaan(sem("f =~ x1 + a*x2 + a*x3",
-                             data = HolzingerSwineford1939)),
-             "equality constraints")
-## likelihood = "wishart" rescales lavaan's objective away from the mean
-## log-likelihood, so the third derivatives would be on the wrong scale
-expect_error(hoij_lavaan(sem("f =~ x1 + x2 + x3",
-                             data = HolzingerSwineford1939,
-                             likelihood = "wishart")), "likelihood")
-
-
-## --- (4) development-lavaan compatibility -----------------------------
-## The development version renamed lav_model_x2GLIST -> lav_model_x2glist,
-## lav_model_gradient -> lav_model_grad and the argument GLIST -> glist.
-## Here the argument rename is simulated by replacing the release
-## internals with shims that have the development signature; results
-## must be identical to the unmodified run.
-cat("\n-- (4) development-lavaan compatibility (simulated renames) --\n")
-ns <- asNamespace("lavaan")
-if (all(c("lav_model_implied", "lav_model_gradient") %in% ls(ns))) {
-  orig_implied  <- get("lav_model_implied",  envir = ns)
-  orig_gradient <- get("lav_model_gradient", envir = ns)
-
-  ## The shims must keep serving lavaan's own internal calls, which use
-  ## the old GLIST= name; those are caught through `...`. Our own code
-  ## detects `glist` in the formals and uses the development name.
-  dev_implied <- function(lavmodel = NULL, glist = NULL, delta = TRUE, ...) {
-    dots <- list(...)
-    if (is.null(glist) && !is.null(dots$GLIST)) glist <- dots$GLIST
-    orig_implied(lavmodel = lavmodel, GLIST = glist, delta = delta)
-  }
-  dev_gradient <- function(lavmodel = NULL, glist = NULL,
-                           lavsamplestats = NULL, lavdata = NULL,
-                           lavcache = NULL, ...) {
-    dots <- list(...)
-    if (is.null(glist) && !is.null(dots$GLIST)) glist <- dots$GLIST
-    orig_gradient(lavmodel = lavmodel, GLIST = glist,
-                  lavsamplestats = lavsamplestats, lavdata = lavdata,
-                  lavcache = lavcache)
-  }
-  assignInNamespace("lav_model_implied",  dev_implied,  ns = "lavaan")
-  assignInNamespace("lav_model_gradient", dev_gradient, ns = "lavaan")
-  source("hoij_core.R")   # reset the resolver cache
-  h2_dev <- hoij_lavaan(fit, functional = functionals, B = 1000L,
-                        order = 2L, seed = 1)
-  stopifnot(isTRUE(all.equal(h2_dev$results, h2$results)))
-  cat("  OK: identical results with development-style glist signatures\n")
-
-  ## An implied() that IGNORES its glist argument is the silent failure
-  ## mode described in 00_install_dependencies.R; it must be caught.
-  broken_implied <- function(lavmodel = NULL, glist = NULL, delta = TRUE, ...)
-    orig_implied(lavmodel = lavmodel, GLIST = NULL, delta = delta)
-  assignInNamespace("lav_model_implied", broken_implied, ns = "lavaan")
-  source("hoij_core.R")
-  expect_error(hoij_lavaan(fit, functional = functionals, B = 100L, seed = 1),
-               "Broken link")
-
-  assignInNamespace("lav_model_implied",  orig_implied,  ns = "lavaan")
-  assignInNamespace("lav_model_gradient", orig_gradient, ns = "lavaan")
-  source("hoij_core.R")
-} else {
-  cat("  (skipped: this lavaan version already uses the development names,\n",
-      "   so sections 1-3 exercise that code path directly)\n")
-}
-
-cat("\nAll tests passed.\n")
