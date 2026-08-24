@@ -3,8 +3,7 @@
 Replication code for:
 
 > Vanbrabant, L., & Rosseel, Y. *Approximating percentile bootstrap
-> confidence intervals in SEM without repeated refitting: A tutorial on
-> the second-order infinitesimal jackknife.*
+> confidence intervals in SEM without repeated refitting: The second-order infinitesimal jackknife.*
 
 The second-order infinitesimal jackknife (HOIJ-2) approximates the
 nonparametric bootstrap distribution of (functions of) the parameters of
@@ -16,10 +15,10 @@ instead of refitting the model for every bootstrap resample.
 | File | What it does |
 |---|---|
 | `00_install_dependencies.R` | Installs the development version of **lavaan** and the remaining packages. Run once. |
-| `hoij_core.R` | Computational kernel: casewise scores and curvature, third derivatives, the IJ1 and HOIJ-2 replicates of Eq. (7) and Eq. (8), and `hoij_selftest()`. |
-| `01_worked_example.R` | Section 3: Table 2, Table 5 and Figure 1 (`fig-tail.pdf`). |
-| `02_timing_comparison.R` | Table 3: timing decomposition for the mediation (D = 21) and bifactor (D = 27) models. |
-| `03_simulation_study.R` | Section 4: Figure 2 (`fig-sim-coverage.pdf`) and the `tab_sim_*.tex` table bodies used by `\inputtablebody`. |
+| `hoij_core.R` | Computational kernel: casewise scores and curvature, third derivatives, the IJ1 and HOIJ-2 replicates. |
+| `01_worked_example.R` | Section 3. |
+| `02_timing_comparison.R` | Subsection 3.3: timing decomposition for the mediation (D = 21) and bifactor (D = 27) models. |
+| `03_simulation_study.R` | Section 4. |
 | `hoij_lavaan.R` | `hoij_lavaan()`, a reusable function that returns HOIJ-2 standard errors and percentile intervals for your own fitted lavaan model. |
 | `test_hoij_lavaan.R` | Tests for `hoij_lavaan()`, including a comparison against an exact bootstrap on the same weight vectors. |
 
@@ -51,14 +50,7 @@ of the parameter vector, or `NULL` for every free parameter. The current
 scope is single-group ML with complete data and continuous indicators,
 without equality constraints.
 
-## Two implementation notes
-
-**lavaan internals.** The casewise curvature and the third derivatives
-are obtained from three non-exported lavaan helpers that were renamed
-between the CRAN release and the development version.  `hoij_core.R`
-resolves both spellings at run time and `hoij_selftest()` verifies every
-scaling convention it relies on, but the reported results were produced
-with the development version; see `00_install_dependencies.R`.
+## An implementation notes
 
 The third derivatives are second differences of lavaan's analytic
 gradient, taken without any rescaling: for normal-theory ML the function
@@ -67,12 +59,3 @@ which self-test (b) verifies. `hoij_lavaan()` therefore refuses
 `likelihood = "wishart"`, which rescales that objective by roughly
 N/(N-1). `check_gradient_hessian()` confirms that the finite differences
 reproduce lavaan's analytic observed information before they are used.
-
-**No damping.** The second-order replicate is Eq. (8) as written. An
-earlier version of this code shrank the second-order step whenever it
-exceeded half the length of the first-order step. That device is not
-part of the method: it is absent from the article and from the reference
-implementation of Giordano et al., and on 40 simulated data sets it made
-no systematic difference -- at N = 500 the bound never engaged at all,
-and at N = 100 the damped and undamped intervals were equally close to
-the exact bootstrap. It has therefore been removed.
