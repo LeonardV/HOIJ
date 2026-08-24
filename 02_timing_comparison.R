@@ -1,18 +1,6 @@
 # =====================================================================
 # 02_timing_comparison.R
 #
-# Companion code for:
-#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
-#   confidence intervals in SEM without repeated refitting: A tutorial
-#   on the second-order infinitesimal jackknife.
-#
-# Reproduces Table 3: timing decomposition of the exact and the
-# approximate bootstrap for two models fitted to N = 500 observations,
-#   (i)  the D = 21 latent mediation model of Section 3, and
-#   (ii) an orthogonal bifactor model for the same nine indicators
-#        (D = 27), which is deliberately harder to refit.
-#
-
 # Run 00_install_dependencies.R once before this script.
 # =====================================================================
 

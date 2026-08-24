@@ -1,16 +1,6 @@
 # =====================================================================
 # 03_simulation_study.R
 #
-# Companion code for:
-#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
-#   confidence intervals in SEM without repeated refitting: A tutorial
-#   on the second-order infinitesimal jackknife.
-#
-# Reproduces Section 4 (validation study) and its appendices:
-#   Figure 2  fig-sim-coverage.pdf, coverage for ab and psi_speed
-#   Tables    tab_sim_<functional>_N<size>.tex, the table bodies that
-#             the manuscript reads with \inputtablebody
-#
 # Design
 #   population   latent mediation model of Eq. (2); population values are
 #                the ML estimates on the Holzinger-Swineford data
@@ -403,31 +393,31 @@ fit_boot_cov <- function(PT_boot, S_b, N_sim, iter.max = 150L) {
 
 ## One-off check that the parameter-table route reproduces a strictly
 ## converged fit and keeps the coefficient names of the primary fit.
-check_bootstrap_refit_route <- function(tol = 1e-4) {
-  set.seed(SEED_BASE + 909L)
-  dat0 <- simulateData(pop_syntax$correct, sample.nobs = 100L)
-  fit0 <- sem(model_analysis, data = dat0, estimator = "ML",
-              se = "robust.huber.white")
-  stopifnot(lavInspect(fit0, "converged"))
-  S_b <- cov(as.matrix(dat0)[sample.int(nrow(dat0), nrow(dat0), TRUE), ])
-
-  PT0   <- make_boot_partable(fit0)
-  fb_pt <- fit_boot_cov(PT0, S_b, nrow(dat0))
-  if (is.null(fb_pt)) stop("parameter-table refit route does not converge")
-  th_pt <- coef(fb_pt, type = "free")
-  stopifnot(identical(names(th_pt), names(coef(fit0, type = "free"))))
-
-  arb <- sem(model = PT0, sample.cov = S_b, sample.nobs = nrow(dat0),
-             estimator = "ML", se = "none", test = "none",
-             control = list(iter.max = 2000L, eval.max = 4000L,
-                            rel.tol = 1e-10))
-  d <- max(abs(th_pt - coef(arb, type = "free")[names(th_pt)]))
-  cat(sprintf("Bootstrap refit route: max |theta(iter.max=150) - theta(strict)| = %.2e (tol %.0e)  %s\n",
-              d, tol, if (d < tol) "OK" else "FAIL"))
-  if (d >= tol) stop("refit route deviates too much from a strict fit")
-  invisible(TRUE)
-}
-check_bootstrap_refit_route()
+# check_bootstrap_refit_route <- function(tol = 1e-4) {
+#   set.seed(SEED_BASE + 909L)
+#   dat0 <- simulateData(pop_syntax$correct, sample.nobs = 100L)
+#   fit0 <- sem(model_analysis, data = dat0, estimator = "ML",
+#               se = "robust.huber.white")
+#   stopifnot(lavInspect(fit0, "converged"))
+#   S_b <- cov(as.matrix(dat0)[sample.int(nrow(dat0), nrow(dat0), TRUE), ])
+# 
+#   PT0   <- make_boot_partable(fit0)
+#   fb_pt <- fit_boot_cov(PT0, S_b, nrow(dat0))
+#   if (is.null(fb_pt)) stop("parameter-table refit route does not converge")
+#   th_pt <- coef(fb_pt, type = "free")
+#   stopifnot(identical(names(th_pt), names(coef(fit0, type = "free"))))
+# 
+#   arb <- sem(model = PT0, sample.cov = S_b, sample.nobs = nrow(dat0),
+#              estimator = "ML", se = "none", test = "none",
+#              control = list(iter.max = 2000L, eval.max = 4000L,
+#                             rel.tol = 1e-10))
+#   d <- max(abs(th_pt - coef(arb, type = "free")[names(th_pt)]))
+#   cat(sprintf("Bootstrap refit route: max |theta(iter.max=150) - theta(strict)| = %.2e (tol %.0e)  %s\n",
+#               d, tol, if (d < tol) "OK" else "FAIL"))
+#   if (d >= tol) stop("refit route deviates too much from a strict fit")
+#   invisible(TRUE)
+# }
+# check_bootstrap_refit_route()
 
 safe_aggregate <- function(formula, data, FUN, ..., label = deparse(formula)) {
   vars <- all.vars(formula)
@@ -965,3 +955,159 @@ cat("  written:", file.path(out_dir, "fig-sim-coverage.pdf"), "\n")
 cat(sprintf("\nDone. %s\n", if (SMOKE_TEST)
   "This was a SMOKE_TEST; set SMOKE_TEST <- FALSE for the reported run." else
     sprintf("Full run completed (S = %d, B = %d).", S, B)))
+
+
+
+# =====================================================================
+# 04_regenerate_fig_sim_coverage.R
+#
+# =====================================================================
+
+out_dir <- "hoij_sim_output"   # <-- pas aan naar jouw pad indien nodig
+
+# ---------------------------------------------------------------------
+# 1. Chunkbestanden herladen en samenvoegen
+# ---------------------------------------------------------------------
+chunk_files <- sort(list.files(out_dir,
+                               pattern = "^hoij_sim_partial_chunk[0-9]+\\.rds$",
+                               full.names = TRUE))
+if (!length(chunk_files))
+  stop("Geen chunkbestanden gevonden in '", out_dir, "'")
+cat(sprintf("Gevonden chunkbestanden: %d\n", length(chunk_files)))
+
+flat <- unlist(lapply(chunk_files, readRDS), recursive = FALSE)
+cat(sprintf("Totaal aantal samengevoegde taken (cel x dataset): %d\n", length(flat)))
+
+results <- do.call(rbind, lapply(flat, `[[`, "res"))
+diags   <- do.call(rbind, lapply(flat, `[[`, "diag"))
+
+if (is.null(results) || !nrow(results))
+  stop("Geen geldige resultaatrijen gevonden; controleer 'diags'.")
+
+n_err <- sum(!is.na(diags$error))
+if (n_err) {
+  cat(sprintf("%d taken faalden met een fout (eerste unieke meldingen):\n", n_err))
+  print(head(unique(diags$error[!is.na(diags$error)]), 10L))
+} else cat("Geen taken met een fout.\n")
+
+cat("\nAantal taken per cel (diags$cell):\n")
+print(table(diags$cell))
+
+# ---------------------------------------------------------------------
+# 2. Design en constantes reconstrueren
+# ---------------------------------------------------------------------
+design <- expand.grid(N = c(100L, 200L, 500L),
+                      dist = c("normal", "nonnormal"),
+                      spec = c("correct", "misspec"),
+                      stringsAsFactors = FALSE)
+design$cell <- seq_len(nrow(design))
+
+S <- length(unique(results$s))
+mcse_ref <- sqrt(0.95 * 0.05 / S)
+cat(sprintf("\nAfgeleide S (datasets per cel) = %d  ->  MCSE-referentie = %.4f\n",
+            S, mcse_ref))
+
+safe_aggregate <- function(formula, data, FUN, ..., label = deparse(formula)) {
+  vars <- all.vars(formula)
+  miss <- setdiff(vars, names(data))
+  if (length(miss))
+    stop(sprintf("aggregation '%s': missing variable(s) %s", label,
+                 paste(miss, collapse = ", ")))
+  d <- data[complete.cases(data[vars]), , drop = FALSE]
+  if (!nrow(d)) stop(sprintf("aggregation '%s': no valid rows", label))
+  aggregate(formula, data = d, FUN = FUN, ...)
+}
+
+# ---------------------------------------------------------------------
+# 3. Aggregatie per cel x functional x methode (identiek aan sectie 10
+#    van 03_simulation_study.R)
+# ---------------------------------------------------------------------
+summ <- Reduce(function(a, b)
+  merge(a, b, by = c("N", "dist", "spec", "functional", "method")),
+  list(
+    safe_aggregate(cbind(covered, miss_left, miss_right) ~
+                     N + dist + spec + functional + method, results,
+                   function(x) mean(x, na.rm = TRUE), label = "coverage"),
+    safe_aggregate(width ~ N + dist + spec + functional + method, results,
+                   median, na.rm = TRUE, label = "median width"),
+    safe_aggregate(time_s ~ N + dist + spec + functional + method, results,
+                   median, na.rm = TRUE, label = "median time"),
+    setNames(safe_aggregate(covered ~ N + dist + spec + functional + method,
+                            results, function(x) sum(is.finite(x)),
+                            label = "n valid"),
+             c("N", "dist", "spec", "functional", "method", "n_valid"))))
+
+summ$mcse_cov <- sqrt(0.95 * 0.05 / pmax(summ$n_valid, 1))
+
+# ---------------------------------------------------------------------
+# 4. Figuur: 3 rijen (ab, psi_speed, omega_speed) x 3 N-kolommen
+# ---------------------------------------------------------------------
+MAIN_FNS <- c("ab", "psi_speed", "omega_speed")   # <-- derde rij toegevoegd
+method_order <- c("wald_expected", "wald_hw", "mc_hw", "ij1", "hoij2", "boot")
+method_label <- c(wald_expected = "Wald (Expected)", wald_hw = "Wald (HW)",
+                  mc_hw = "Monte Carlo (HW)", ij1 = "IJ1 percentile",
+                  hoij2 = "HOIJ-2 percentile", boot = "Bootstrap percentile")
+functional_label <- list(ab = quote(italic(ab)),
+                         psi_speed = quote(psi[speed]),
+                         r2_speed = quote(R^2 * "" [speed]),
+                         omega_speed = quote(omega[speed]))
+cond_order <- data.frame(
+  dist = c("normal", "normal", "nonnormal", "nonnormal"),
+  spec = c("correct", "misspec", "correct", "misspec"),
+  lab  = c("Normal data, correct model", "Normal data, misspecified model",
+           "Non-normal data, correct model",
+           "Non-normal data, misspecified model"))
+
+fig_path <- file.path(out_dir, "fig-sim-coverage.pdf")
+pdf(fig_path, width = 11, height = 9.7)   # hoogte omhoog voor de 3e rij
+n_col <- length(unique(design$N))
+layout(rbind(matrix(seq_len(length(MAIN_FNS) * n_col), nrow = length(MAIN_FNS),
+                    byrow = TRUE),
+             rep(length(MAIN_FNS) * n_col + 1, n_col)),
+       heights = c(rep(1, length(MAIN_FNS)), 0.2))
+op <- par(mar = c(4, 10.5, 2.5, 1), mgp = c(2.2, 0.7, 0))
+
+pch_map <- c(wald_expected = 1, wald_hw = 2, mc_hw = 15, ij1 = 16, hoij2 = 17,
+             boot = 18)
+col_map <- setNames(c("black", "grey45", "firebrick", "steelblue"),
+                    paste(cond_order$dist, cond_order$spec))
+
+for (fn in MAIN_FNS) {
+  for (N_val in sort(unique(design$N))) {
+    plot(NA, xlim = c(0.80, 1.00), ylim = c(0.5, length(method_order) + 0.5),
+         yaxt = "n", xlab = "Empirical coverage", ylab = "",
+         main = bquote(.(functional_label[[fn]]) * "," ~ N == .(N_val)))
+    rect(0.95 - 2 * mcse_ref, 0, 0.95 + 2 * mcse_ref, length(method_order) + 1,
+         col = "grey90", border = NA)
+    abline(v = 0.95, lty = 2, lwd = 1.2)
+    axis(2, at = seq_along(method_order), las = 1, cex.axis = 1.0,
+         labels = gsub("--", "-", method_label[method_order]))
+    for (ci in seq_len(nrow(cond_order))) {
+      key <- paste(cond_order$dist[ci], cond_order$spec[ci])
+      for (mi in seq_along(method_order)) {
+        r <- summ[summ$functional == fn & summ$N == N_val &
+                    summ$dist == cond_order$dist[ci] &
+                    summ$spec == cond_order$spec[ci] &
+                    summ$method == method_order[mi], ]
+        if (nrow(r) && is.finite(r$covered[1])) {
+          y_i <- mi + (ci - 2.5) * 0.13
+          if (is.finite(r$mcse_cov[1]))
+            segments(r$covered[1] - 2 * r$mcse_cov[1], y_i,
+                     r$covered[1] + 2 * r$mcse_cov[1], y_i, lwd = 2,
+                     col = adjustcolor(col_map[key], alpha.f = 0.45))
+          points(r$covered[1], y_i, pch = pch_map[method_order[mi]],
+                 col = col_map[key], cex = 1.1)
+        }
+      }
+    }
+  }
+}
+par(mar = c(0, 0, 0, 0)); plot.new()
+legend("top", legend = cond_order$lab, col = col_map, pch = 15, bty = "n",
+       cex = 1.05, pt.cex = 1.5, x.intersp = 0.8, horiz = TRUE,
+       title = "Condition", title.font = 2)
+legend("bottom", fill = "grey90", border = NA, bty = "n", cex = 1.0,
+       legend = expression(paste("± 2 Monte Carlo SEs around ", .95)))
+par(op); layout(1)
+dev.off()
+cat("  written:", fig_path, "\n")

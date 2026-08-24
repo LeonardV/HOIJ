@@ -2,28 +2,10 @@
 # hoij_lavaan(): HOIJ-2 standard errors and confidence intervals for a
 # fitted lavaan model
 #
-# Companion code for:
-#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
-#   confidence intervals in SEM without repeated refitting: A tutorial
-#   on the second-order infinitesimal jackknife.
-#
 # This is the reusable version of the machinery used in the analysis
 # scripts: it approximates the bootstrap distribution of (functions of)
 # the free parameters from a single fitted model, without refitting.
 #
-# For each multinomial weight vector w (as a bootstrap resample would
-# produce), with C = (w - 1)' S Hhat^-1 (see hoij_core.R),
-#   IJ1    : theta(w) ~ theta-hat - C                         Eq. (7)
-#   HOIJ-2 : theta(w) ~ theta-hat - C + d2                    Eq. (8)
-#            d2 = Hhat^-1 H_delta C - 1/2 Hhat^-1 T(C, C)
-# The functional is evaluated on each replicate; the standard error is
-# the standard deviation and the interval the percentile interval of
-# those values.
-#
-# Scope (enforced by .hoij_check_fit):
-#   single group, complete data, normal-theory ML, continuous
-#   indicators, no equality constraints, no multilevel or sampling
-#   weights
 #
 # Usage:
 #   source("hoij_core.R"); source("hoij_lavaan.R")

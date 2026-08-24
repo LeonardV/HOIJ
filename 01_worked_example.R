@@ -1,15 +1,9 @@
 # =====================================================================
 # 01_worked_example.R
 #
-# Companion code for:
-#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
-#   confidence intervals in SEM without repeated refitting: A tutorial
-#   on the second-order infinitesimal jackknife.
-#
 # Reproduces Section 3 (tutorial example):
 #   Table 2  distributional SD, skewness and 95% limits for ab,
 #            psi_speed and omega_speed
-#   Table 5  the same summaries for |ab|, theta_11, R2_speed and P_M
 #   Figure 1 fig-tail.pdf, tail-magnified replicate densities for the
 #            three targets (the single-panel fig-shape.pdf version is
 #            kept commented out below)

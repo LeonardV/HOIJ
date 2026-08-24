@@ -1,14 +1,8 @@
 # =====================================================================
 # 00_install_dependencies.R
 #
-# Companion code for:
-#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
-#   confidence intervals in SEM without repeated refitting: A tutorial
-#   on the second-order infinitesimal jackknife.
-#
 # Run this script once before 01_worked_example.R,
 # 02_timing_comparison.R and 03_simulation_study.R.
-#
 # =====================================================================
 
 ## 1. Development version of lavaan --------------------------------------

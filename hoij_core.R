@@ -1,20 +1,15 @@
 # =====================================================================
 # hoij_core.R -- computational kernel 
 #
-# Companion code for:
-#   Vanbrabant, L., & Rosseel, Y. Approximating percentile bootstrap
-#   confidence intervals in SEM without repeated refitting: A tutorial
-#   on the second-order infinitesimal jackknife.
-#
 # Notation follows the article:
-#   s_i(theta)   casewise score                                 Eq. (2)
-#   H_i(theta)   casewise observed information                  Eq. (3)
+#   s_i(theta)   casewise score                                 
+#   H_i(theta)   casewise observed information                  
 #   Hhat         mean casewise information at theta-hat
-#   g_delta      weight perturbation of the score               Eq. (6)
-#   H_delta      weight perturbation of the information         Eq. (9)
-#   Khat(u, v)   third-derivative contraction                   Eq. (12)
-#   IJ1          theta-hat + Hhat^-1 g_delta                    Eq. (7)
-#   HOIJ-2       IJ1 - Hhat^-1 H_delta d + 1/2 Hhat^-1 Khat(d, d), Eq. (8)
+#   g_delta      weight perturbation of the score               
+#   H_delta      weight perturbation of the information         
+#   Khat(u, v)   third-derivative contraction                   
+#   IJ1          theta-hat + Hhat^-1 g_delta                    
+#   HOIJ-2       IJ1 - Hhat^-1 H_delta d + 1/2 Hhat^-1 Khat(d, d), 
 #
 # lavaan conventions relied upon:
 #   lavScores(fit, scaling = TRUE)         = -s_i(theta-hat) / N
@@ -22,7 +17,7 @@
 #   compute_T_tensor_grad()                = -Khat
 # =====================================================================
 
-# lavaan internals
+## lavaan internals
 
 .hoij_internals <- local({
   cache <- NULL
@@ -59,7 +54,7 @@
 
 
 
-# Casewise log-likelihood, Eq. (1)
+# Casewise log-likelihood
 compute_loglik_casewise <- function(fit, theta) {
   X <- fit@Data@X[[1]]
   N <- nrow(X); p <- ncol(X)
@@ -83,7 +78,7 @@ compute_loglik_casewise <- function(fit, theta) {
 }
 
 
-# Casewise observed information H_i, Eq. (3)
+# Casewise observed information H_i
 compute_all_H <- function(fit, theta0, delta = 1e-5) {
   D <- length(theta0); N <- nrow(fit@Data@X[[1]])
   H_array <- array(0, dim = c(N, D, D))
@@ -150,7 +145,7 @@ check_gradient_hessian <- function(grad_F, theta0, H_observed, h = 1e-5) {
 }
 
 
-# Third-derivative array, Eq. (12)
+# Third-derivative array
 compute_T_tensor_grad <- function(grad_F, theta, h = 1e-4) {
   D <- length(theta)
   T_arr <- array(0, dim = c(D, D, D))
@@ -181,7 +176,7 @@ compute_T_tensor_grad <- function(grad_F, theta, h = 1e-4) {
 }
 
 
-# First-order replicates, Eq. (7)
+# First-order replicates
 ij1_replicates <- function(theta0, Scores, H.inv, dW) {
   C_mat <- (dW %*% Scores) %*% H.inv                       # B x D
   theta_rep <- sweep(-C_mat, 2, theta0, "+")
@@ -190,13 +185,13 @@ ij1_replicates <- function(theta0, Scores, H.inv, dW) {
 }
 
 
-# Second-order replicates, Eq. (8)
+# Second-order replicates
 hoij2_replicates <- function(theta0, C_mat, dW, H.inv, H_all, T_arr) {
   D <- length(theta0); B <- nrow(C_mat); N <- dim(H_all)[1]
 
   Tmat  <- matrix(T_arr, nrow = D)                         # D x D^2
   H_2d  <- matrix(H_all, nrow = N, ncol = D * D)           # N x D^2
-  HW_2d <- (dW %*% H_2d) / N                               # B x D^2, Eq. (9)
+  HW_2d <- (dW %*% H_2d) / N                               # B x D^2
   HT    <- H.inv %*% Tmat
 
   theta_rep <- matrix(NA_real_, B, D, dimnames = list(NULL, names(theta0)))
