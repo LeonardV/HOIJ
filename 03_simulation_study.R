@@ -377,7 +377,8 @@ make_boot_partable <- function(fit_k) {
 
 ## Fit to a weighted covariance matrix with all side work switched off.
 ## check.post = FALSE only disables the check inside the fitter; the
-## explicit post.check below still counts inadmissible replicates.
+## explicit post.check in the bootstrap loop still counts inadmissible
+## replicates (they are retained, not dropped).
 fit_boot_cov <- function(PT_boot, S_b, N_sim, iter.max = 150L) {
   fb <- tryCatch(sem(model = PT_boot, sample.cov = S_b, sample.nobs = N_sim,
                      estimator = "ML", se = "none", test = "none",
@@ -546,10 +547,12 @@ run_dataset <- function(cell_row, s) {
     if (is.null(fit_b)) { n_boot_fail <- n_boot_fail + 1L; next }
     adm <- tryCatch(isTRUE(suppressWarnings(lavInspect(fit_b, "post.check"))),
                     error = function(e) TRUE)
-    ## Non-converged or inadmissible refits are dropped from the
-    ## bootstrap percentiles, but their weight vectors still feed IJ1
-    ## and HOIJ-2, which cannot fail in this way.
-    if (!adm) { n_boot_inadmiss <- n_boot_inadmiss + 1L; next }
+    ## Non-converged refits are dropped from the bootstrap percentiles,
+    ## but their weight vectors still feed IJ1 and HOIJ-2, which cannot
+    ## fail in this way. Converged but inadmissible refits are counted
+    ## and retained, mirroring the primary convention for HOIJ-2, where
+    ## inadmissible approximate parameter vectors are kept as well.
+    if (!adm) n_boot_inadmiss <- n_boot_inadmiss + 1L
     th_b <- tryCatch(coef(fit_b, type = "free"), error = function(e) NULL)
     if (!is.null(th_b) && length(th_b) == D) boot_th[r, ] <- th_b
   }
@@ -888,8 +891,9 @@ fail_by_m <- c(
                           na.rm = TRUE)),
   hoij2 = 100 * (1 - mean(results$frac_finite[results$method == "hoij2"],
                           na.rm = TRUE)),
-  boot  = 100 * (mean(diags$boot_fail, na.rm = TRUE) +
-                   mean(diags$boot_inadmiss, na.rm = TRUE)))
+  ## bootstrap: only non-converged refits are excluded; inadmissible
+  ## refits are retained, so they do not count as failures here
+  boot  = 100 * mean(diags$boot_fail, na.rm = TRUE))
 t_boot_med <- tt$time_s[tt$method == "boot"]
 con <- file(file.path(out_dir, "tab_sim_time.tex"), "w")
 for (m in method_order)
