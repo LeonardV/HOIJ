@@ -36,13 +36,30 @@ x 1,001 fits). Run it with `SMOKE_TEST <- TRUE` first.
 ## Using HOIJ-2 on your own model
 
 ```r
-source("hoij_core.R")
+library(lavaan)
+
+source("hoij_core.R") 
 source("hoij_lavaan.R")
 
-fit <- lavaan::sem(model, data = mydata, estimator = "ML")
+model <- '
+  visual  =~ x1 + x2 + x3
+  textual =~ x4 + x5 + x6
+  speed   =~ x7 + x8 + x9
+  visual ~ c*textual + b*speed
+  speed  ~ a*textual
+'
+fit <- sem(model, data = HolzingerSwineford1939, estimator = "ML")
 
-hoij_lavaan(fit, functional = c(ab = "a*b", psi = "`speed~~speed`"),
-            B = 1000, order = 2, seed = 1)
+hoij_lavaan(fit, functional = c(ab = "a*b"), B = 5000, order = 2, seed = 42)
+
+HOIJ-2 (second-order infinitesimal jackknife)
+B = 5000 weight vectors | 95% percentile CI | N = 301, D = 21
+setup 0.52s + replicates 0.80s
+derivative check 9.7e-06
+inadmissible replicates: 1.3% (kept)
+
+ functional   est    se    lo    hi n_used
+         ab 0.095 0.053 0.017 0.228   5000
 ```
 
 `functional` accepts expressions in the free-parameter names, functions
