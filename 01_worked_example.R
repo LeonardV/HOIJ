@@ -231,7 +231,7 @@ cat(sprintf("  %d converged, %d failed (%.2f%%)\n",
             sum(valid), sum(!valid), 100 * mean(!valid)))
 
 ij1   <- ij1_replicates(theta0, Scores, H.inv, dW)              # Eq. (7)
-hoij2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr)  # Eq. (8)
+hoij2 <- hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr, fit = fit)  # Eq. (8)
 
 set.seed(SEED_MC)
 L_mc  <- t(chol(V_hw + diag(1e-10, D)))

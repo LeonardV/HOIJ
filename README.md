@@ -21,6 +21,7 @@ instead of refitting the model for every bootstrap resample.
 | `03_simulation_study.R` | Section 4. |
 | `hoij_lavaan.R` | `hoij_lavaan()`, a reusable function that returns HOIJ-2 standard errors and percentile intervals for your own fitted lavaan model. |
 | `test_hoij_lavaan.R` | Tests for `hoij_lavaan()`, including a comparison against an exact bootstrap on the same weight vectors. |
+| `test_hoij_centering.R` | Regression test: for a saturated covariance model HOIJ-2 must reproduce the exact weighted ML covariance, with and without a mean structure. |
 
 Scripts assume the repository root as the working directory and write
 their output to a script-specific subdirectory.
@@ -76,3 +77,13 @@ which self-test (b) verifies. `hoij_lavaan()` therefore refuses
 `likelihood = "wishart"`, which rescales that objective by roughly
 N/(N-1). `check_gradient_hessian()` confirms that the finite differences
 reproduce lavaan's analytic observed information before they are used.
+
+Covariance-only ML (the lavaan default, `meanstructure = FALSE`)
+profiles out the observed means. Recentring a reweighted sample changes
+its ML covariance by a term that is quadratic in the mean shift, which
+the fixed-centre casewise derivatives do not capture. `hoij2_replicates()`
+therefore takes the fitted object as its `fit` argument and adds this
+profiled-mean correction; with an explicit mean structure the joint
+derivatives already contain it and no correction is applied.
+`test_hoij_centering.R` checks both cases against the exact weighted
+covariance.

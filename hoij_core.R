@@ -10,6 +10,7 @@
 #   Khat(u, v)   third-derivative contraction                   
 #   IJ1          theta-hat + Hhat^-1 g_delta                    
 #   HOIJ-2       IJ1 - Hhat^-1 H_delta d + 1/2 Hhat^-1 Khat(d, d), 
+#                plus the profiled-mean correction for covariance-only ML
 #
 # lavaan conventions relied upon:
 #   lavScores(fit, scaling = TRUE)         = -s_i(theta-hat) / N
@@ -186,7 +187,7 @@ ij1_replicates <- function(theta0, Scores, H.inv, dW) {
 
 
 # Second-order replicates
-hoij2_replicates <- function(theta0, C_mat, dW, H.inv, H_all, T_arr) {
+hoij2_replicates <- function(theta0, C_mat, dW, H.inv, H_all, T_arr, fit) {
   D <- length(theta0); B <- nrow(C_mat); N <- dim(H_all)[1]
 
   Tmat  <- matrix(T_arr, nrow = D)                         # D x D^2
@@ -203,6 +204,32 @@ hoij2_replicates <- function(theta0, C_mat, dW, H.inv, H_all, T_arr) {
     Ac <- 0.5 * drop(HT %*% as.vector(tcrossprod(c_vec)))
 
     theta_rep[i, ] <- theta0 - c_vec + (Bc - Ac)
+  }
+
+  # Covariance-only ML profiles out the observed means. Recentring each
+  # weighted sample changes its ML covariance by -dmu %*% t(dmu), in
+  # addition to the linear covariance perturbation. The fixed-centre
+  # casewise derivatives above do not include this second-order term.
+  # With an explicit mean structure the joint derivatives include the
+  # mean response already, so no separate correction is added.
+  if (!isTRUE(lavaan::lavInspect(fit, "options")$meanstructure)) {
+    X     <- fit@Data@X[[1L]]
+    Sigma <- lavaan::lavTech(fit, "sigma.hat")[[1L]]
+    Delta <- lavaan::lavTech(fit, "delta")[[1L]]
+    idx   <- which(lower.tri(Sigma, diag = TRUE), arr.ind = TRUE)
+
+    stopifnot(nrow(X) == N, ncol(X) == nrow(Sigma),
+              nrow(Delta) == nrow(idx), ncol(Delta) == D,
+              all(abs(rowSums(dW)) < 1e-8))
+
+    Xc <- sweep(X, 2L, colMeans(X), "-")
+    U  <- ((dW %*% Xc) / N) %*% solve(Sigma)
+
+    # Delta = d vech(Sigma) / d theta. The off-diagonal entries appear
+    # twice in a symmetric matrix, cancelling the factor 1/2 there.
+    Q <- U[, idx[, 1L], drop = FALSE] * U[, idx[, 2L], drop = FALSE]
+    Q <- sweep(Q, 2L, ifelse(idx[, 1L] == idx[, 2L], 0.5, 1), "*")
+    theta_rep <- theta_rep - (Q %*% Delta) %*% t(H.inv)
   }
   theta_rep
 }
