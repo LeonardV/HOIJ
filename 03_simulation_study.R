@@ -4,7 +4,7 @@
 # Design
 #   population   latent mediation model of Eq. (2); population values are
 #                the ML estimates on the Holzinger-Swineford data
-#                (D = 21 free parameters), no effect override
+#                (D = 30, including nine free intercepts), no effect override
 #   functionals  primary   ab, psi_speed = speed~~speed
 #                secondary r2_speed, omega_speed
 #   factors      N    in {100, 200, 500}
@@ -86,7 +86,7 @@ SEED_BASE <- 2026L
 ncores <- max(1L, detectCores(logical = FALSE) - 1L)
 if (is.na(ncores) || ncores < 1L) ncores <- max(1L, detectCores() - 1L)
 
-out_dir <- file.path(getwd(), "hoij_sim_output")
+out_dir <- file.path(getwd(), "hoij_sim_output_means")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 design <- expand.grid(N = c(100L, 200L, 500L),
@@ -113,10 +113,11 @@ model_analysis <- '
   speed  ~ a*textual
 '
 
-fit_hs <- sem(model_analysis, data = HolzingerSwineford1939, estimator = "ML")
+fit_hs <- sem(model_analysis, data = HolzingerSwineford1939, estimator = "ML",
+              meanstructure = TRUE)
 stopifnot(lavInspect(fit_hs, "converged"))
 theta_pop <- coef(fit_hs, type = "free")
-stopifnot(length(theta_pop) == 21L)
+stopifnot(length(theta_pop) == 30L)
 cat(sprintf("Population fitted on Holzinger-Swineford data: D = %d\n",
             length(theta_pop)))
 
@@ -124,6 +125,8 @@ cat(sprintf("Population fitted on Holzinger-Swineford data: D = %d\n",
 ## that simulateData() cannot fall back on starting values.
 build_pop_syntax <- function(fit, extra = NULL) {
   pt <- parTable(fit)
+  ## Keep zero population means, as in the original simulation design.
+  ## Free intercepts are estimated in every analysis and bootstrap fit.
   pt <- pt[pt$op %in% c("=~", "~", "~~"), , drop = FALSE]
   paste(c(sprintf("%s %s %.12g*%s", pt$lhs, pt$op, pt$est, pt$rhs), extra),
         collapse = "\n")
@@ -150,6 +153,8 @@ pop_rmsea <- function(delta) {
   Sm <- make_Sigma_mis(delta)
   if (!tryCatch({ chol(Sm); TRUE }, error = function(e) FALSE)) return(10)
   f <- tryCatch(sem(model_analysis, sample.cov = Sm, sample.nobs = N_PSEUDO,
+                    sample.mean = setNames(rep(0, nrow(Sm)), rownames(Sm)),
+                    meanstructure = TRUE, sample.cov.rescale = FALSE,
                     estimator = "ML", se = "none"), error = function(e) NULL)
   if (is.null(f) || !lavInspect(f, "converged")) return(10)
   sqrt(max(2 * unname(fitMeasures(f, "fmin")), 0) / unname(fitMeasures(f, "df")))
@@ -292,7 +297,9 @@ pseudo_truth <- list()
 for (sp in names(Sigma_by_spec)) {
   ## normal: exact, by fitting the analysis model to the population Sigma
   f <- sem(model_analysis, sample.cov = Sigma_by_spec[[sp]],
-           sample.nobs = N_PSEUDO, estimator = "ML", se = "none")
+           sample.nobs = N_PSEUDO, estimator = "ML", se = "none",
+           sample.mean = setNames(rep(0, length(ov_names)), ov_names),
+           meanstructure = TRUE, sample.cov.rescale = FALSE)
   stopifnot(lavInspect(f, "converged"))
   th <- coef(f, type = "free")
   pseudo_truth[[paste("normal", sp, sep = "_")]] <-
@@ -303,6 +310,8 @@ for (sp in names(Sigma_by_spec)) {
   set.seed(SEED_BASE + 8000L + match(sp, names(Sigma_by_spec)))
   dat_big <- simulate_vita_data(N_TRUTH, sp, center = TRUE)
   f <- sem(model_analysis, sample.cov = cov(dat_big), sample.nobs = N_TRUTH,
+           sample.mean = colMeans(dat_big), meanstructure = TRUE,
+           sample.cov.rescale = TRUE,
            estimator = "ML", se = "none")
   if (!lavInspect(f, "converged"))
     stop("pseudo-truth fit did not converge for nonnormal/", sp)
@@ -375,12 +384,15 @@ make_boot_partable <- function(fit_k) {
   PT
 }
 
-## Fit to a weighted covariance matrix with all side work switched off.
+## Fit to weighted means and the unbiased weighted covariance matrix.
+## lavaan rescales the latter by (N - 1) / N for normal-theory ML.
 ## check.post = FALSE only disables the check inside the fitter; the
 ## explicit post.check in the bootstrap loop still counts inadmissible
 ## replicates (they are retained, not dropped).
-fit_boot_cov <- function(PT_boot, S_b, N_sim, iter.max = 150L) {
+fit_boot_cov <- function(PT_boot, S_b, N_sim, mu_b, iter.max = 150L) {
   fb <- tryCatch(sem(model = PT_boot, sample.cov = S_b, sample.nobs = N_sim,
+                     sample.mean = mu_b, meanstructure = TRUE,
+                     sample.cov.rescale = TRUE,
                      estimator = "ML", se = "none", test = "none",
                      h1 = FALSE, baseline = FALSE, check.gradient = FALSE,
                      check.start = FALSE, check.post = FALSE,
@@ -398,18 +410,22 @@ fit_boot_cov <- function(PT_boot, S_b, N_sim, iter.max = 150L) {
 #   set.seed(SEED_BASE + 909L)
 #   dat0 <- simulateData(pop_syntax$correct, sample.nobs = 100L)
 #   fit0 <- sem(model_analysis, data = dat0, estimator = "ML",
-#               se = "robust.huber.white")
+#               se = "robust.huber.white", meanstructure = TRUE)
 #   stopifnot(lavInspect(fit0, "converged"))
-#   S_b <- cov(as.matrix(dat0)[sample.int(nrow(dat0), nrow(dat0), TRUE), ])
+#   dat_b <- dat0[sample.int(nrow(dat0), nrow(dat0), TRUE), , drop = FALSE]
+#   S_b <- cov(dat_b)
+#   mu_b <- colMeans(dat_b)
 # 
 #   PT0   <- make_boot_partable(fit0)
-#   fb_pt <- fit_boot_cov(PT0, S_b, nrow(dat0))
+#   fb_pt <- fit_boot_cov(PT0, S_b, nrow(dat0), mu_b = mu_b)
 #   if (is.null(fb_pt)) stop("parameter-table refit route does not converge")
 #   th_pt <- coef(fb_pt, type = "free")
 #   stopifnot(identical(names(th_pt), names(coef(fit0, type = "free"))))
 # 
 #   arb <- sem(model = PT0, sample.cov = S_b, sample.nobs = nrow(dat0),
 #              estimator = "ML", se = "none", test = "none",
+#              sample.mean = mu_b, meanstructure = TRUE,
+#              sample.cov.rescale = TRUE,
 #              control = list(iter.max = 2000L, eval.max = 4000L,
 #                             rel.tol = 1e-10))
 #   d <- max(abs(th_pt - coef(arb, type = "free")[names(th_pt)]))
@@ -455,7 +471,7 @@ run_dataset <- function(cell_row, s) {
       error = function(e) NULL)
     f_try <- if (is.null(dat_try)) NULL else
       tryCatch(sem(model_analysis, data = dat_try, estimator = "ML",
-                   se = "robust.huber.white"), error = function(e) NULL)
+                   se = "robust.huber.white", meanstructure = TRUE), error = function(e) NULL)
     if (tryCatch(!is.null(f_try) && isTRUE(lavInspect(f_try, "converged")),
                  error = function(e) FALSE)) {
       fit_k <- f_try; dat_k <- dat_try; break
@@ -528,22 +544,22 @@ run_dataset <- function(cell_row, s) {
   dW <- W_counts - 1L
   t_w <- elapsed_sec(t0)
 
-  ## --- exact bootstrap on the weighted covariance matrix ------------
-  ## Without a mean structure the sample covariance matrix is the full
-  ## sufficient statistic, so fitting the p x p weighted covariance is
-  ## equivalent to fitting the N x p resampled data, but faster.
+  ## --- exact bootstrap on weighted means and covariance --------------
+  ## Together these are sufficient statistics for normal-theory ML.
+  ## Both are recomputed for every weight vector, reproducing the raw-data
+  ## bootstrap with the same free intercepts as the original fit.
   t0 <- proc.time()[["elapsed"]]
   boot_th <- matrix(NA_real_, B, D, dimnames = list(NULL, th_names))
   n_boot_fail <- 0L; n_boot_inadmiss <- 0L
   PT_boot <- make_boot_partable(fit_k)
-  dat_mat <- as.matrix(dat_k)
+  dat_mat <- as.matrix(lavInspect(fit_k, "data"))
   mu_all  <- W_counts %*% dat_mat / N_sim
   for (r in 1:B) {
     w   <- W_counts[r, ]
     S_b <- (crossprod(dat_mat * w, dat_mat) -
               N_sim * tcrossprod(mu_all[r, ])) / (N_sim - 1)
     S_b <- (S_b + t(S_b)) / 2
-    fit_b <- fit_boot_cov(PT_boot, S_b, N_sim)
+    fit_b <- fit_boot_cov(PT_boot, S_b, N_sim, mu_b = mu_all[r, ])
     if (is.null(fit_b)) { n_boot_fail <- n_boot_fail + 1L; next }
     adm <- tryCatch(isTRUE(suppressWarnings(lavInspect(fit_b, "post.check"))),
                     error = function(e) TRUE)
@@ -792,6 +808,7 @@ saveRDS(list(results = results, diags = diags, design = design,
              pseudo_truth = pseudo_truth, delta_star = delta_star,
              rmsea_achieved = rmsea_achieved,
              config = list(S = S, B = B, R_MC = R_MC, ALPHA = ALPHA,
+                           meanstructure = TRUE,
                            INCLUDE_BCA = INCLUDE_BCA,
                            N_TRUTH = N_TRUTH, VITA_NMAX = VITA_NMAX,
                            VITA_SDLOG = VITA_SDLOG, SEED_BASE = SEED_BASE,
@@ -967,7 +984,7 @@ cat(sprintf("\nDone. %s\n", if (SMOKE_TEST)
 #
 # =====================================================================
 
-out_dir <- "hoij_sim_output"   # <-- pas aan naar jouw pad indien nodig
+out_dir <- "hoij_sim_output_means"   # <-- pas aan naar jouw pad indien nodig
 
 # ---------------------------------------------------------------------
 # 1. Chunkbestanden herladen en samenvoegen

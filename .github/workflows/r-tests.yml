@@ -1,0 +1,37 @@
+name: R numerical checks
+
+on:
+  pull_request:
+    paths:
+      - '**.R'
+      - '.github/workflows/r-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  numerical-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - name: Install test dependencies
+        shell: Rscript {0}
+        run: |
+          install.packages(c("remotes", "MASS"))
+          remotes::install_github("yrosseel/lavaan", upgrade = "never")
+      - name: Parse scripts and check derivative conventions
+        shell: Rscript {0}
+        run: |
+          invisible(lapply(list.files(pattern = "[.]R$"), parse))
+          source("hoij_core.R")
+          stopifnot(hoij_selftest(meanstructure = FALSE))
+          stopifnot(hoij_selftest(meanstructure = TRUE))
+      - name: Check exact centering and bootstrap refits
+        run: Rscript test_hoij_centering.R
+      - name: Check mediation model against shared-weight bootstrap
+        run: Rscript test_hoij_lavaan.R

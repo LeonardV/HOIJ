@@ -10,7 +10,8 @@
 #   Khat(u, v)   third-derivative contraction                   
 #   IJ1          theta-hat + Hhat^-1 g_delta                    
 #   HOIJ-2       IJ1 - Hhat^-1 H_delta d + 1/2 Hhat^-1 Khat(d, d), 
-#                plus the profiled-mean correction for covariance-only ML
+#                with means included in theta for the analysis scripts.
+#                A profiled-mean correction supports covariance-only fits.
 #
 # lavaan conventions relied upon:
 #   lavScores(fit, scaling = TRUE)         = -s_i(theta-hat) / N
@@ -66,6 +67,8 @@ compute_loglik_casewise <- function(fit, theta) {
   implied <- do.call(ints$implied, args)
 
   Sigma <- implied$cov[[1]]
+  # With a mean structure this is recomputed from the full theta on each
+  # call, including perturbations of the freely estimated intercepts.
   mu    <- implied$mean[[1]]
   if (is.null(mu) || length(mu) == 0) mu <- colMeans(X)
 
@@ -282,14 +285,16 @@ skewness <- function(x) {
 # (e) inverted.information.expected / N is lavaan's standard vcov,
 #     the covariance matrix behind the Wald (Expected) comparator
 # ---------------------------------------------------------------------
-hoij_selftest <- function(tol_rel = 0.01, verbose = TRUE) {
+hoij_selftest <- function(tol_rel = 0.01, verbose = TRUE,
+                          meanstructure = TRUE) {
   say <- function(...) if (verbose) cat(sprintf(...))
   say("-- hoij_core self-test (lavaan %s) --\n",
       as.character(packageVersion("lavaan")))
 
   fit <- lavaan::sem("f =~ x1 + x2 + x3",
                      data = lavaan::HolzingerSwineford1939,
-                     estimator = "ML", se = "robust.huber.white")
+                     estimator = "ML", se = "robust.huber.white",
+                     meanstructure = meanstructure)
   th0 <- lavaan::coef(fit, type = "free")
   D <- length(th0); N <- nrow(fit@Data@X[[1]]); h <- 1e-6
 
@@ -309,10 +314,12 @@ hoij_selftest <- function(tol_rel = 0.01, verbose = TRUE) {
   ## (b) information.observed = sum_i H_i / N  (also catches H_i == 0)
   H_sum <- apply(compute_all_H(fit, th0), c(2, 3), sum)
   H_obs <- lavaan::lavTech(fit, "information.observed")
-  r_H <- median(as.numeric(H_obs) / as.numeric(H_sum)) * N
-  ok_b <- is.finite(r_H) && abs(r_H - 1) < tol_rel
-  say("  (b) observed info      : N * ratio = %+.6f (expect +1)  %s\n",
-      r_H, if (ok_b) "OK" else "FAIL")
+  # Mean/covariance cross-blocks can be zero. Compare whole matrices
+  # without dividing by individual entries in those blocks.
+  err_H <- max(abs(H_obs - H_sum / N)) / max(abs(H_obs))
+  ok_b <- is.finite(err_H) && err_H < tol_rel
+  say("  (b) observed info      : scaled maximum error = %.2e  %s\n",
+      err_H, if (ok_b) "OK" else "FAIL")
 
   ## (c) the finite differences reproduce lavaan's observed information
   grad_F <- make_grad_F(fit)
@@ -345,9 +352,11 @@ hoij_selftest <- function(tol_rel = 0.01, verbose = TRUE) {
   ## (e) expected-information vcov used by the Wald (Expected) comparator
   fit_std <- lavaan::sem("f =~ x1 + x2 + x3",
                          data = lavaan::HolzingerSwineford1939,
-                         estimator = "ML", se = "standard")
-  r_e <- max(abs(lavaan::lavTech(fit, "inverted.information.expected") / N /
-                   lavaan::lavInspect(fit_std, "vcov") - 1))
+                         estimator = "ML", se = "standard",
+                         meanstructure = meanstructure)
+  V_std <- lavaan::lavInspect(fit_std, "vcov")
+  r_e <- max(abs(lavaan::lavTech(fit, "inverted.information.expected") / N -
+                   V_std)) / max(abs(V_std))
   ok_e <- is.finite(r_e) && r_e < 1e-6
   say("  (e) expected info scale: max rel. deviation = %.2e  %s\n",
       r_e, if (ok_e) "OK" else "FAIL")
