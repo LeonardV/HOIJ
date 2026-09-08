@@ -20,6 +20,8 @@ jobs:
         with:
           use-public-rspm: true
       - name: Install test dependencies
+        env:
+          GITHUB_PAT: ${{ github.token }}
         shell: Rscript {0}
         run: |
           install.packages(c("remotes", "MASS"))
