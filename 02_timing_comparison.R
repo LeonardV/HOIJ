@@ -145,7 +145,7 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
 
   t_loop <- system.time({
     ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
-    hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr)
+    hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr, fit = fit)
   })["elapsed"]
   t_rep_approx <- as.numeric(t_loop) / N_TIMING
   cat(sprintf("approximate bootstrap: %.6f s per replicate (n = %d)\n",

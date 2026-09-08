@@ -600,7 +600,7 @@ run_dataset <- function(cell_row, s) {
         } else {
           t_hsetup <- elapsed_sec(t0)
           t0 <- proc.time()[["elapsed"]]
-          hoij_th <- hoij2_replicates(theta0, C_mat, dW, H.inv, H_all, T_arr)
+          hoij_th <- hoij2_replicates(theta0, C_mat, dW, H.inv, H_all, T_arr, fit = fit_k)
           hoij_inadmiss <- apply(hoij_th[, var_idx, drop = FALSE] < 0, 1, any)
           t_hloop <- elapsed_sec(t0)
         }

@@ -182,7 +182,7 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
 
   ij1 <- ij1_replicates(theta0, Scores, H.inv, dW)
   theta_rep <- if (order == 2L)
-    hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr) else ij1$theta
+    hoij2_replicates(theta0, ij1$C, dW, H.inv, H_all, T_arr, fit = fit) else ij1$theta
   inadmiss <- if (length(var_idx))
     apply(theta_rep[, var_idx, drop = FALSE] < 0, 1, any) else rep(FALSE, B)
   t_rep <- proc.time()[["elapsed"]] - t0
