@@ -35,3 +35,8 @@ if (!internals_ok) {
        "lav_model_x2GLIST(); hoij_core.R needs to be updated.")
 }
 cat("lavaan internals required by hoij_core.R are available\n")
+
+## Check the joint mean/covariance derivative conventions before analysis.
+source("hoij_core.R")
+if (!hoij_selftest(meanstructure = TRUE))
+  stop("Joint mean/covariance derivative self-test failed.")

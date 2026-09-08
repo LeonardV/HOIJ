@@ -34,7 +34,7 @@ ALPHA_CI <- 0.05     # nominal 95% intervals
 ## all remaining population values are the Holzinger-Swineford estimates.
 EFFECT_PARS <- c(a = 0.10, b = 0.10)
 
-out_dir <- "hoij_worked_example_output"
+out_dir <- "hoij_worked_example_output_means"
 if (!dir.exists(out_dir)) dir.create(out_dir)
 
 cat("lavaan", as.character(packageVersion("lavaan")), "\n")
@@ -52,10 +52,14 @@ model_med <- '
   visual  ~ b*speed + c*textual
 '
 
-fit_hs <- sem(model_med, data = HolzingerSwineford1939, se = "none")
+fit_hs <- sem(model_med, data = HolzingerSwineford1939, se = "none",
+              estimator = "ML", meanstructure = TRUE)
 stopifnot(lavInspect(fit_hs, "converged"))
 
 pt_pop <- parTable(fit_hs)
+## Preserve the zero-mean simulation population used in the original example.
+pt_pop$ustart[pt_pop$op == "~1"] <- 0
+pt_pop$est[pt_pop$op == "~1"] <- 0
 for (par in names(EFFECT_PARS)) {
   pt_pop$ustart[pt_pop$label == par] <- EFFECT_PARS[par]
   pt_pop$est[pt_pop$label == par]    <- EFFECT_PARS[par]
@@ -64,14 +68,17 @@ for (par in names(EFFECT_PARS)) {
 set.seed(SEED_DATA)
 dat <- simulateData(pt_pop, sample.nobs = N_EX)
 
-fit <- sem(model_med, data = dat, se = "none", estimator = "ML")
+fit <- sem(model_med, data = dat, se = "none", estimator = "ML",
+           meanstructure = TRUE)
 stopifnot(lavInspect(fit, "converged"))
 
 theta0   <- coef(fit, type = "free")
 th_names <- names(theta0)
 D        <- length(theta0)
 N        <- nrow(dat)
-stopifnot(D == 21, N == N_EX)
+## 21 covariance parameters plus nine freely estimated intercepts.
+stopifnot(D == 30L, N == N_EX,
+          all(paste0("x", 1:9, "~1") %in% th_names))
 
 cat(sprintf("Analysis model: D = %d, N = %d\n", D, N))
 cat(sprintf("a = %.4f, b = %.4f, ab = %.4f, psi_speed = %.4f\n",
@@ -179,9 +186,9 @@ cat("\nPoint estimates:\n"); print(round(fn_hat, 4))
 # 3. Covariance matrices for the two Wald comparators
 # ---------------------------------------------------------------------
 fit_expected <- sem(model_med, data = dat, estimator = "ML",
-                    se = "standard", information = "expected")
+                    se = "standard", information = "expected", meanstructure = TRUE)
 fit_hw  <- sem(model_med, data = dat, estimator = "ML",
-               se = "robust.huber.white")
+               se = "robust.huber.white", meanstructure = TRUE)
 stopifnot(lavInspect(fit_expected, "converged"),
           lavInspect(fit_hw, "converged"))
 
@@ -220,7 +227,7 @@ boot_th <- matrix(NA_real_, B, D, dimnames = list(NULL, th_names))
 for (bb in seq_len(B)) {
   dat_b <- dat[rep.int(seq_len(N), W_counts[bb, ]), , drop = FALSE]
   fit_b <- tryCatch(sem(model_med, data = dat_b, se = "none",
-                        estimator = "ML", start = fit),
+                        estimator = "ML", meanstructure = TRUE, start = fit),
                     error = function(e) NULL)
   if (!is.null(fit_b) && lavInspect(fit_b, "converged"))
     boot_th[bb, ] <- coef(fit_b, type = "free")
@@ -239,8 +246,8 @@ mc_th <- sweep(matrix(rnorm(R_MC * D), R_MC, D) %*% t(L_mc), 2, theta0, "+")
 colnames(mc_th) <- th_names
 
 ## The approximate replicates are restricted to the weight vectors on
-## which the exact bootstrap converged, so all four distributions are
-## based on the same weights.
+## which the exact bootstrap converged. IJ1, HOIJ-2 and bootstrap share
+## these weights; Monte Carlo uses independent normal parameter draws.
 replicates <- list(mc_hw = mc_th,
                    ij1   = ij1$theta[valid, , drop = FALSE],
                    hoij2 = hoij2[valid, , drop = FALSE],
@@ -451,6 +458,7 @@ write.csv(tab_intervals,
 saveRDS(list(seeds = c(data = SEED_DATA, weights = SEED_WEIGHTS,
                        mc = SEED_MC),
              effect_pars = EFFECT_PARS, N = N, B = B, R_MC = R_MC, D = D,
+             meanstructure = TRUE,
              theta0 = theta0, fn_hat = fn_hat,
              valid = valid, replicates = replicates, W_counts = W_counts,
              V_expected = V_expected, V_hw = V_hw,

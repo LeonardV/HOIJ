@@ -17,17 +17,22 @@ instead of refitting the model for every bootstrap resample.
 | `00_install_dependencies.R` | Installs the development version of **lavaan** and the remaining packages. Run once. |
 | `hoij_core.R` | Computational kernel: casewise scores and curvature, third derivatives, the IJ1 and HOIJ-2 replicates. |
 | `01_worked_example.R` | Section 3. |
-| `02_timing_comparison.R` | Subsection 3.3: timing decomposition for the mediation (D = 21) and bifactor (D = 27) models. |
+| `02_timing_comparison.R` | Subsection 3.3: timing decomposition for the mediation (D = 30) and bifactor (D = 36) models, including nine free intercepts each. |
 | `03_simulation_study.R` | Section 4. |
 | `hoij_lavaan.R` | `hoij_lavaan()`, a reusable function that returns HOIJ-2 standard errors and percentile intervals for your own fitted lavaan model. |
 | `test_hoij_lavaan.R` | Tests for `hoij_lavaan()`, including a comparison against an exact bootstrap on the same weight vectors. |
-| `test_hoij_centering.R` | Regression test: for a saturated covariance model HOIJ-2 must reproduce the exact weighted ML covariance, with and without a mean structure. |
+| `test_hoij_centering.R` | Checks exact weighted means/covariances, agreement of joint and profiled routes, and the simulation bootstrap helper against raw-data refits. |
 
 Scripts assume the repository root as the working directory and write
-their output to a script-specific subdirectory.
+their output to a script-specific subdirectory ending in `_means`.
+These directories separate the joint mean/covariance runs from earlier
+outputs and simulation checkpoints. Both output paths in the simulation
+script, including the figure-regeneration section, use the new directory.
 
 ```r
 source("00_install_dependencies.R")   # once
+source("test_hoij_centering.R")
+source("test_hoij_lavaan.R")
 source("01_worked_example.R")
 ```
 
@@ -49,18 +54,11 @@ model <- '
   visual ~ c*textual + b*speed
   speed  ~ a*textual
 '
-fit <- sem(model, data = HolzingerSwineford1939, estimator = "ML")
+fit <- sem(model, data = HolzingerSwineford1939, estimator = "ML",
+           meanstructure = TRUE)
 
 hoij_lavaan(fit, functional = c(ab = "a*b"), B = 5000, order = 2, seed = 42)
 
-HOIJ-2 (second-order infinitesimal jackknife)
-B = 5000 weight vectors | 95% percentile CI | N = 301, D = 21
-setup 0.52s + replicates 0.80s
-derivative check 9.7e-06
-inadmissible replicates: 1.3% (kept)
-
- functional   est    se    lo    hi n_used
-         ab 0.095 0.053 0.017 0.228   5000
 ```
 
 `functional` accepts expressions in the free-parameter names, functions
@@ -68,7 +66,25 @@ of the parameter vector, or `NULL` for every free parameter. The current
 scope is single-group ML with complete data and continuous indicators,
 without equality constraints.
 
-## An implementation notes
+## Implementation notes
+
+All analysis and bootstrap fits now use `meanstructure = TRUE`. The nine
+observed intercepts are free and the latent means remain fixed at zero.
+Scores, observed information, casewise curvature and third derivatives
+are computed for the full parameter vector, including those intercepts.
+This accounts for changing sample means within the joint HOIJ-2 expansion.
+The simulated populations retain zero means, as in the original design.
+
+The simulation bootstrap supplies both `sample.mean` and `sample.cov`.
+Bootstrap covariances use divisor N - 1 and `sample.cov.rescale = TRUE`,
+so lavaan converts them to the normal-theory ML covariance with divisor N.
+Population covariance matrices instead use `sample.cov.rescale = FALSE`.
+The Wald and Monte Carlo comparisons use the same full parameter vector.
+
+Rerun the worked example, timing comparison and simulation before updating
+the manuscript. Earlier numerical examples and the existing supplementary
+PDFs have not been regenerated for this route. The extra parameters change
+the derivative setup cost, so earlier timings do not describe these scripts.
 
 The third derivatives are second differences of lavaan's analytic
 gradient, taken without any rescaling: for normal-theory ML the function
@@ -78,7 +94,8 @@ which self-test (b) verifies. `hoij_lavaan()` therefore refuses
 N/(N-1). `check_gradient_hessian()` confirms that the finite differences
 reproduce lavaan's analytic observed information before they are used.
 
-Covariance-only ML (the lavaan default, `meanstructure = FALSE`)
+For compatibility, covariance-only ML (`meanstructure = FALSE`) remains
+supported by the reusable function. This route
 profiles out the observed means. Recentring a reweighted sample changes
 its ML covariance by a term that is quadratic in the mean shift, which
 the fixed-centre casewise derivatives do not capture. `hoij2_replicates()`
@@ -86,4 +103,4 @@ therefore takes the fitted object as its `fit` argument and adds this
 profiled-mean correction; with an explicit mean structure the joint
 derivatives already contain it and no correction is applied.
 `test_hoij_centering.R` checks both cases against the exact weighted
-covariance.
+covariance and verifies the estimated means on the joint route.

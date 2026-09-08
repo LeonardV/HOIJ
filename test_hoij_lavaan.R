@@ -15,7 +15,9 @@ model <- '
   visual ~ c*textual + b*speed
   speed  ~ a*textual
 '
-fit <- sem(model, data = HolzingerSwineford1939, estimator = "ML")
+fit <- sem(model, data = HolzingerSwineford1939, estimator = "ML",
+           meanstructure = TRUE)
+stopifnot(length(coef(fit)) == 30L)
 
 functionals <- c(ab = "a*b", psi_visual = "`visual~~visual`", psi_speed = "`speed~~speed`")
 
@@ -48,6 +50,7 @@ for (r in seq_len(B)) {
   S_b <- (S_b + t(S_b)) / 2
   fb <- tryCatch(
     sem(model = PT, sample.cov = S_b, sample.nobs = N, estimator = "ML",
+        sample.mean = mu, meanstructure = TRUE, sample.cov.rescale = TRUE,
         se = "none", test = "none", h1 = FALSE, baseline = FALSE,
         check.gradient = FALSE, check.start = FALSE, check.post = FALSE,
         control = list(iter.max = 150L)),
@@ -84,4 +87,3 @@ for (nm in names(functionals)) {
   cat(sprintf("%-10s max |CI difference| / width = %.3f\n", "", rel))
   stopifnot(rel < 0.25, abs(sd(v_h2) / sd(v_bt) - 1) < 0.20)
 }
-

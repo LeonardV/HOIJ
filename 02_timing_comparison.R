@@ -15,7 +15,7 @@ B_TARGETS    <- c(1000, 5000)
 SEED_MED     <- 20260706
 SEED_BIF     <- 20260810
 
-out_dir <- "hoij_timing_output"
+out_dir <- "hoij_timing_output_means"
 if (!dir.exists(out_dir)) dir.create(out_dir)
 
 cat("lavaan", as.character(packageVersion("lavaan")), "\n")
@@ -29,8 +29,8 @@ hoij_selftest()
 # standard orthogonal bifactor structure on the same nine indicators: a
 # general factor g plus the three original group factors, all latent
 # covariances fixed to zero and all factor variances fixed to one
-# (std.lv = TRUE). That gives 18 loadings + 9 residual variances = 27
-# free parameters.
+# (std.lv = TRUE). Together with nine free intercepts this gives
+# 18 loadings + 9 residual variances + 9 intercepts = 36 free parameters.
 # ---------------------------------------------------------------------
 model_med <- '
   visual  =~ x1 + x2 + x3
@@ -65,7 +65,7 @@ time_repeated_fit <- function(model_syntax, dat, start_fit, std_lv, n_fit) {
     gc(FALSE)
     tt <- system.time({
       f <- tryCatch(sem(model_syntax, data = dat, se = "none",
-                        estimator = "ML", std.lv = std_lv, start = start_fit),
+                        estimator = "ML", meanstructure = TRUE, std.lv = std_lv, start = start_fit),
                     error = function(e) NULL)
     })["elapsed"]
     if (!is.null(f) && lavInspect(f, "converged")) times[i] <- as.numeric(tt)
@@ -89,14 +89,18 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
 
   ## Population = Holzinger-Swineford ML estimates. No effect override:
   fit_pop <- sem(model_syntax, data = HolzingerSwineford1939, se = "none",
-                 std.lv = std_lv)
+                 std.lv = std_lv, meanstructure = TRUE)
   stopifnot(lavInspect(fit_pop, "converged"))
 
   set.seed(seed_data)
-  dat <- simulateData(parTable(fit_pop), sample.nobs = N_EX)
+  pt_pop <- parTable(fit_pop)
+  ## Keep the original zero-mean data-generating population.
+  pt_pop$ustart[pt_pop$op == "~1"] <- 0
+  pt_pop$est[pt_pop$op == "~1"] <- 0
+  dat <- simulateData(pt_pop, sample.nobs = N_EX)
 
   fit <- sem(model_syntax, data = dat, se = "none", estimator = "ML",
-             std.lv = std_lv)
+             std.lv = std_lv, meanstructure = TRUE)
   stopifnot(lavInspect(fit, "converged"))
 
   theta0 <- coef(fit, type = "free")
@@ -158,7 +162,7 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
     dat_b <- dat[rep.int(seq_len(N), W_counts[bb, ]), , drop = FALSE]
     tt <- system.time({
       fit_b <- tryCatch(sem(model_syntax, data = dat_b, se = "none",
-                            estimator = "ML", std.lv = std_lv, start = fit),
+                            estimator = "ML", meanstructure = TRUE, std.lv = std_lv, start = fit),
                         error = function(e) NULL)
     })["elapsed"]
     if (!is.null(fit_b) && lavInspect(fit_b, "converged")) {
@@ -198,9 +202,9 @@ time_one_model <- function(model_syntax, D_expected, label, seed_data,
 # ---------------------------------------------------------------------
 # Run both models
 # ---------------------------------------------------------------------
-res_med <- time_one_model(model_med, D_expected = 21, label = "Mediation",
+res_med <- time_one_model(model_med, D_expected = 30, label = "Mediation",
                           seed_data = SEED_MED, std_lv = FALSE)
-res_bif <- time_one_model(model_bifactor, D_expected = 27, label = "Bifactor",
+res_bif <- time_one_model(model_bifactor, D_expected = 36, label = "Bifactor",
                           seed_data = SEED_BIF, std_lv = TRUE)
 
 
@@ -224,9 +228,9 @@ rows <- list(
 
 tab_timing <- data.frame(
   Row           = vapply(rows, `[`, character(1), 1),
-  Mediation_D21 = vapply(rows, function(r) as.numeric(res_med[[r[2]]]),
+  Mediation_D30 = vapply(rows, function(r) as.numeric(res_med[[r[2]]]),
                          numeric(1)),
-  Bifactor_D27  = vapply(rows, function(r) as.numeric(res_bif[[r[2]]]),
+  Bifactor_D36  = vapply(rows, function(r) as.numeric(res_bif[[r[2]]]),
                          numeric(1)))
 
 cat("\n===== Table 3 =====\n")
@@ -277,6 +281,6 @@ write.csv(tab_timing, file.path(out_dir, sprintf("tab_timing_%s.csv", stamp)),
           row.names = FALSE)
 saveRDS(list(mediation = res_med, bifactor = res_bif, N = N_EX,
              N_TIMING = N_TIMING, N_FIT_TIMING = N_FIT_TIMING,
-             B_TARGETS = B_TARGETS, sessionInfo = sessionInfo()),
+             B_TARGETS = B_TARGETS, meanstructure = TRUE, sessionInfo = sessionInfo()),
         file.path(out_dir, sprintf("timing_raw_%s.rds", stamp)))
 cat(sprintf("Done. Output in %s\n", out_dir))

@@ -9,8 +9,8 @@
 #
 # Usage:
 #   source("hoij_core.R"); source("hoij_lavaan.R")
-#   fit <- sem(model, data = dat)
-#   hoij_lavaan(fit, functional = c("a*b", "speed~~speed"))
+#   fit <- sem(model, data = dat, estimator = "ML", meanstructure = TRUE)
+#   hoij_lavaan(fit, functional = c(ab = "a*b", psi = "`speed~~speed`"))
 # =====================================================================
 
 if (!exists("compute_all_H", mode = "function")) source("hoij_core.R")
@@ -215,6 +215,7 @@ hoij_lavaan <- function(fit, functional = NULL, B = 1000L, order = 2L,
     results = res,
     diagnostics = list(
       order = order, B = B, level = level,
+      meanstructure = isTRUE(lavaan::lavInspect(fit, "options")$meanstructure),
       admissibility = admissibility, grad_spread = grad_spread,
       frac_inadmissible = mean(inadmiss),
       time_setup_s = t_setup, time_replicates_s = t_rep, N = N, D = D),
