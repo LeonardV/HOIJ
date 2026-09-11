@@ -20,8 +20,6 @@ instead of refitting the model for every bootstrap resample.
 | `02_timing_comparison.R` | Subsection 3.3: timing decomposition for the mediation (D = 30) and bifactor (D = 36) models, including nine free intercepts each. |
 | `03_simulation_study.R` | Section 4. |
 | `hoij_lavaan.R` | `hoij_lavaan()`, a reusable function that returns HOIJ-2 standard errors and percentile intervals for your own fitted lavaan model. |
-| `test_hoij_lavaan.R` | Tests for `hoij_lavaan()`, including a comparison against an exact bootstrap on the same weight vectors. |
-| `test_hoij_centering.R` | Checks exact weighted means/covariances, agreement of joint and profiled routes, and the simulation bootstrap helper against raw-data refits. |
 
 Scripts assume the repository root as the working directory and write
 their output to a script-specific subdirectory ending in `_means`.
@@ -31,8 +29,6 @@ script, including the figure-regeneration section, use the new directory.
 
 ```r
 source("00_install_dependencies.R")   # once
-source("test_hoij_centering.R")
-source("test_hoij_lavaan.R")
 source("01_worked_example.R")
 ```
 
