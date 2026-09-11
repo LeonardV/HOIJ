@@ -59,6 +59,14 @@ fit <- sem(model, data = HolzingerSwineford1939, estimator = "ML",
 
 hoij_lavaan(fit, functional = c(ab = "a*b"), B = 5000, order = 2, seed = 42)
 
+HOIJ-2 (second-order infinitesimal jackknife)
+B = 5000 weight vectors | 95% percentile CI | N = 301, D = 30
+setup 5.39s + replicates 4.11s
+derivative check 9.7e-06
+inadmissible replicates: 1.3% (kept)
+
+ functional   est    se    lo    hi n_used
+         ab 0.095 0.053 0.017 0.228   5000
 ```
 
 `functional` accepts expressions in the free-parameter names, functions
